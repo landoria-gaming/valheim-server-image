@@ -29,10 +29,10 @@ The platform repository consumes the published image and is responsible for Podm
 
 ## Runtime contract
 
-The image runs as UID 1000, exposes UDP ports 2456 and 2457, handles `SIGINT`, and uses these persistent mounts:
+The image runs as UID 1000, requires `SERVER_PORT`, handles `SIGINT`, and uses these persistent mounts. The orchestrator must publish `SERVER_PORT` and `SERVER_PORT + 1` unchanged so Valheim advertises the correct public game and Steam query ports.
 
 - `/data` for Valheim world and server data;
 - `/mods/plugins` for BepInEx plugins;
 - `/mods/config` for BepInEx and plugin configuration.
 
-Required environment variables are `SERVER_NAME`, `WORLD_NAME`, `SERVER_PASSWORD`, and `INSTANCE_ID`. Optional variables are `VALHEIM_INSTANCE_ID`, `PUBLIC_SERVER`, `CROSSPLAY`, `WORLD_PRESET`, `WORLD_KEY`, `WORLD_MODIFIER`, and `WORLD_MODIFIER_VALUE`.
+Required environment variables are `SERVER_NAME`, `WORLD_NAME`, `SERVER_PASSWORD`, `SERVER_PORT`, and `INSTANCE_ID`. Optional variables are `VALHEIM_INSTANCE_ID`, `PUBLIC_SERVER`, `CROSSPLAY`, `WORLD_PRESET`, `WORLD_KEY`, `WORLD_MODIFIER`, and `WORLD_MODIFIER_VALUE`.

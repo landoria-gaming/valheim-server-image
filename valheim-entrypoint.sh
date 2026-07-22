@@ -5,6 +5,15 @@ set -eu
 : "${WORLD_NAME:?WORLD_NAME is required}"
 : "${SERVER_PASSWORD:?SERVER_PASSWORD is required}"
 : "${INSTANCE_ID:?INSTANCE_ID is required}"
+: "${SERVER_PORT:?SERVER_PORT is required}"
+
+case "$SERVER_PORT" in
+    ''|*[!0-9]*) echo "SERVER_PORT must be a number." >&2; exit 1 ;;
+esac
+[ "$SERVER_PORT" -ge 1 ] && [ "$SERVER_PORT" -le 65534 ] || {
+    echo "SERVER_PORT must be between 1 and 65534." >&2
+    exit 1
+}
 
 if [ "${#SERVER_PASSWORD}" -lt 5 ]; then
     echo "SERVER_PASSWORD must contain at least five characters." >&2
@@ -24,7 +33,7 @@ set -- \
     -nographics \
     -batchmode \
     -name "$SERVER_NAME" \
-    -port 2456 \
+    -port "$SERVER_PORT" \
     -world "$WORLD_NAME" \
     -password "$SERVER_PASSWORD" \
     -savedir /data \

@@ -50,6 +50,5 @@ COPY --chown=valheim:valheim --chmod=0755 valheim-entrypoint.sh /usr/local/bin/v
 
 WORKDIR /opt/valheim-server
 VOLUME ["/data", "/mods/plugins", "/mods/config"]
-EXPOSE 2456/udp 2457/udp
 STOPSIGNAL SIGINT
 ENTRYPOINT ["/usr/local/bin/valheim-entrypoint"]
