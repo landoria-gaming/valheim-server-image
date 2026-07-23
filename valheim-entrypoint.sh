@@ -3,7 +3,7 @@ set -eu
 
 : "${SERVER_NAME:?SERVER_NAME is required}"
 : "${WORLD_NAME:?WORLD_NAME is required}"
-: "${SERVER_PASSWORD:?SERVER_PASSWORD is required}"
+: "${SERVER_PASSWORD?SERVER_PASSWORD is required}"
 : "${INSTANCE_ID:?INSTANCE_ID is required}"
 : "${SERVER_PORT:?SERVER_PORT is required}"
 
@@ -15,8 +15,8 @@ esac
     exit 1
 }
 
-if [ "${#SERVER_PASSWORD}" -lt 5 ]; then
-    echo "SERVER_PASSWORD must contain at least five characters." >&2
+if [ -n "$SERVER_PASSWORD" ] && [ "${#SERVER_PASSWORD}" -lt 5 ]; then
+    echo "SERVER_PASSWORD must be empty or contain at least five characters." >&2
     exit 1
 fi
 

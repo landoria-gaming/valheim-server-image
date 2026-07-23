@@ -35,4 +35,4 @@ The image runs as UID 1000, requires `SERVER_PORT`, handles `SIGINT`, and uses t
 - `/mods/plugins` for BepInEx plugins;
 - `/mods/config` for BepInEx and plugin configuration.
 
-Required environment variables are `SERVER_NAME`, `WORLD_NAME`, `SERVER_PASSWORD`, `SERVER_PORT`, and `INSTANCE_ID`. Optional variables are `VALHEIM_INSTANCE_ID`, `PUBLIC_SERVER`, `CROSSPLAY`, `WORLD_PRESET`, `WORLD_KEY`, `WORLD_MODIFIER`, and `WORLD_MODIFIER_VALUE`.
+Required environment variables are `SERVER_NAME`, `WORLD_NAME`, `SERVER_PASSWORD`, `SERVER_PORT`, and `INSTANCE_ID`. `SERVER_PASSWORD` may be empty for passwordless servers; a non-empty value must contain at least five characters. Optional variables are `VALHEIM_INSTANCE_ID`, `PUBLIC_SERVER`, `CROSSPLAY`, `WORLD_PRESET`, `WORLD_KEY`, `WORLD_MODIFIER`, and `WORLD_MODIFIER_VALUE`.
