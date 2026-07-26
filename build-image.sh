@@ -3,7 +3,7 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 container_engine="${CONTAINER_ENGINE:-podman}"
-image_name="${VALHEIM_IMAGE:-localhost/ironlabs-valheim:latest}"
+image_name="${VALHEIM_IMAGE:-localhost/landoria-valheim:latest}"
 
 command -v "$container_engine" >/dev/null 2>&1 || {
     echo "The configured container engine is unavailable: $container_engine" >&2
