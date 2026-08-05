@@ -18,12 +18,17 @@ Override the local image name with `VALHEIM_IMAGE`.
 
 ## Published image
 
-GitHub Actions publishes the repository image to GHCR with immutable release and commit tags:
+GitHub Actions builds the image on the `dev` self-hosted runner with rootless Podman and publishes
+it to GHCR with immutable release and commit tags:
 
 ```text
 ghcr.io/end3rbyte/valheim-server-image:v1.0.0
 ghcr.io/end3rbyte/valheim-server-image:sha-COMMIT
 ```
+
+The runner must have the `dev` and `valheim-image` labels and provide Podman in its service
+`PATH`. A push to `main`, a `v*` tag, or a manual workflow dispatch starts the pipeline. The
+default branch also publishes `latest`; a release tag publishes the matching version tag.
 
 The platform repository consumes the published image and is responsible for Podman, Quadlet units, persistent instances, ports, backups, and lifecycle operations.
 

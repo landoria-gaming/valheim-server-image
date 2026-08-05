@@ -1,4 +1,5 @@
-name: Publish the Valheim image
+---
+name: Build and publish the Valheim image
 
 on:
   push:
@@ -7,6 +8,7 @@ on:
     paths:
       - Containerfile
       - valheim-entrypoint.sh
+      - build-image.sh
       - .dockerignore
       - .github/workflows/publish-image.yml
   workflow_dispatch:
@@ -15,45 +17,76 @@ permissions:
   contents: read
   packages: write
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+concurrency:
+  group: valheim-image-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: [self-hosted, Linux, X64, dev, valheim-image]
+    timeout-minutes: 45
+    env:
+      REGISTRY: ghcr.io
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
+      - name: Define image tags
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY,,}"
+          image="${REGISTRY}/${repository}"
+          commit_tag="sha-${GITHUB_SHA:0:7}"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+          printf 'commit_ref=%s:%s\n' "$image" "$commit_tag" >> "$GITHUB_OUTPUT"
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            printf 'release_ref=%s:%s\n' "$image" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+            printf 'release_ref=%s:latest\n' "$image" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the image
+        shell: bash
+        env:
+          VALHEIM_IMAGE: ${{ steps.image.outputs.commit_ref }}
+        run: |
+          set -euo pipefail
+          CONTAINER_ENGINE=podman ./build-image.sh
+
       - name: Sign in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" |
+            podman login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Prepare image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
+      - name: Publish the image
+        shell: bash
+        env:
+          COMMIT_REF: ${{ steps.image.outputs.commit_ref }}
+          RELEASE_REF: ${{ steps.image.outputs.release_ref }}
+        run: |
+          set -euo pipefail
+          podman push "$COMMIT_REF"
+          if [[ -n "$RELEASE_REF" ]]; then
+            podman tag "$COMMIT_REF" "$RELEASE_REF"
+            podman push "$RELEASE_REF"
+          fi
 
-      - name: Configure Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and publish
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Containerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Clean the runner
+        if: always()
+        shell: bash
+        env:
+          COMMIT_REF: ${{ steps.image.outputs.commit_ref }}
+          RELEASE_REF: ${{ steps.image.outputs.release_ref }}
+        run: |
+          set +e
+          podman logout "$REGISTRY"
+          [[ -z "$RELEASE_REF" ]] || podman image rm "$RELEASE_REF"
+          [[ -z "$COMMIT_REF" ]] || podman image rm "$COMMIT_REF"
