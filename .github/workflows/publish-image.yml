@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, Linux, X64, dev, valheim-image]
+    runs-on: [self-hosted, Linux, X64, valheim-image]
     timeout-minutes: 45
     env:
       REGISTRY: ghcr.io
