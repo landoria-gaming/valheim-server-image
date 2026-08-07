@@ -23,11 +23,18 @@ RUN curl --fail --location --show-error --silent \
         --output /tmp/steamcmd.tar.gz \
     && tar -xzf /tmp/steamcmd.tar.gz -C /opt/steamcmd \
     && rm /tmp/steamcmd.tar.gz \
-    && /opt/steamcmd/steamcmd.sh \
+    && attempt=1 \
+    && while ! /opt/steamcmd/steamcmd.sh \
         +force_install_dir /opt/valheim-server \
         +login anonymous \
         +app_update 896660 validate \
-        +quit
+        +quit; do \
+        if [ "$attempt" -ge 3 ]; then \
+            exit 1; \
+        fi; \
+        attempt=$((attempt + 1)); \
+        sleep 15; \
+    done
 
 RUN curl --fail --location --show-error --silent \
         "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/${BEPINEX_VERSION}/" \

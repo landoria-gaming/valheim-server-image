@@ -90,3 +90,4 @@ jobs:
           podman logout "$REGISTRY"
           [[ -z "$RELEASE_REF" ]] || podman image rm "$RELEASE_REF"
           [[ -z "$COMMIT_REF" ]] || podman image rm "$COMMIT_REF"
+          exit 0
