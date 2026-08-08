@@ -10,10 +10,10 @@ set -eu
 case "$SERVER_PORT" in
     ''|*[!0-9]*) echo "SERVER_PORT must be a number." >&2; exit 1 ;;
 esac
-[ "$SERVER_PORT" -ge 1 ] && [ "$SERVER_PORT" -le 65534 ] || {
+if [ "$SERVER_PORT" -lt 1 ] || [ "$SERVER_PORT" -gt 65534 ]; then
     echo "SERVER_PORT must be between 1 and 65534." >&2
     exit 1
-}
+fi
 
 if [ -n "$SERVER_PASSWORD" ] && [ "${#SERVER_PASSWORD}" -lt 5 ]; then
     echo "SERVER_PASSWORD must be empty or contain at least five characters." >&2
