@@ -124,9 +124,11 @@ jobs:
           set -euo pipefail
           repository="${GITHUB_REPOSITORY,,}"
           image_reference="ghcr.io/${repository}:sha-${GITHUB_SHA:0:7}"
-          ghcr_token="$(sudo cat /var/lib/landoria-secrets/github-token)"
-          printf '%s' "$ghcr_token" | ssh -o BatchMode=yes -o ConnectTimeout=10 \
-            "$DEPLOY_TARGET_HOST" sudo env \
-            "GHCR_USER=$GITHUB_ACTOR" "VALHEIM_IMAGE=$image_reference" \
-            /opt/landoria-ops/valheim-podman/images/pull-image.sh
-          unset ghcr_token
+          ssh -o BatchMode=yes -o ConnectTimeout=10 \
+            "$DEPLOY_TARGET_HOST" bash -s -- "$image_reference" <<'REMOTE'
+          set -euo pipefail
+          sudo test -r /var/lib/landoria-platform-secrets/ghcr-token
+          sudo cat /var/lib/landoria-platform-secrets/ghcr-token | \
+            sudo env VALHEIM_IMAGE="$1" \
+              /opt/landoria-ops/valheim-podman/images/pull-image.sh
+          REMOTE
