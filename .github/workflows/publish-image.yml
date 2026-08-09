@@ -120,12 +120,13 @@ jobs:
         shell: bash
         env:
           DEPLOY_TARGET_HOST: ${{ matrix.host }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           repository="${GITHUB_REPOSITORY,,}"
           image_reference="ghcr.io/${repository}:sha-${GITHUB_SHA:0:7}"
-          printf '%s' "$GHCR_TOKEN" | ssh -o BatchMode=yes -o ConnectTimeout=10 \
+          ghcr_token="$(sudo cat /var/lib/landoria-secrets/github-token)"
+          printf '%s' "$ghcr_token" | ssh -o BatchMode=yes -o ConnectTimeout=10 \
             "$DEPLOY_TARGET_HOST" sudo env \
             "GHCR_USER=$GITHUB_ACTOR" "VALHEIM_IMAGE=$image_reference" \
             /opt/landoria-ops/valheim-podman/images/pull-image.sh
+          unset ghcr_token
