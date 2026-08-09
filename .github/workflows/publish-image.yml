@@ -132,3 +132,16 @@ jobs:
             sudo env VALHEIM_IMAGE="$1" \
               /opt/landoria-ops/valheim-podman/images/pull-image.sh
           REMOTE
+
+  request-test-restart:
+    needs: deploy-test
+    runs-on: [self-hosted, Linux, X64, valheim-image]
+    steps:
+      - name: Request a test server restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$(sudo cat /var/lib/landoria-secrets/github-token)"
+          export GH_TOKEN
+          gh api --method POST repos/end3rbyte/valheim-root/dispatches \
+            -f event_type=restart-valheim-test
