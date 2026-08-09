@@ -20,6 +20,14 @@ if [ -n "$SERVER_PASSWORD" ] && [ "${#SERVER_PASSWORD}" -lt 5 ]; then
     exit 1
 fi
 
+case "${LANDORIA_AFK_TIMEOUT_MINUTES:-30}" in
+    ''|*[!0-9]*) echo "LANDORIA_AFK_TIMEOUT_MINUTES must be a number." >&2; exit 1 ;;
+esac
+if [ "${LANDORIA_AFK_TIMEOUT_MINUTES:-30}" -lt 1 ]; then
+    echo "LANDORIA_AFK_TIMEOUT_MINUTES must be at least 1." >&2
+    exit 1
+fi
+
 mkdir -p /mods/plugins /mods/config
 if [ ! -f /mods/config/BepInEx.cfg ]; then
     cp /opt/bepinex-default-config/BepInEx.cfg /mods/config/BepInEx.cfg
@@ -39,6 +47,8 @@ set -- \
     -savedir /data \
     -public "${PUBLIC_SERVER:-0}" \
     -instanceid "${VALHEIM_INSTANCE_ID:-$INSTANCE_ID}"
+
+set -- "$@" --afktimeout "${LANDORIA_AFK_TIMEOUT_MINUTES:-30}"
 
 if [ "${CROSSPLAY:-0}" = "1" ]; then
     set -- "$@" -crossplay
