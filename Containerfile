@@ -2,6 +2,7 @@ FROM debian:trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BEPINEX_VERSION=5.4.2333
+ARG MOD_REPOSITORY_URL
 ARG BEPINEX_SHA256=5dd24ccbcaa9260f714b200f23c4c15547e2aa5f06906cafcc0dee56db1bf716
 
 RUN dpkg --add-architecture i386 \
@@ -37,7 +38,7 @@ RUN curl --fail --location --show-error --silent \
     done
 
 RUN curl --fail --location --show-error --silent \
-        "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/${BEPINEX_VERSION}/" \
+        "${MOD_REPOSITORY_URL:?MOD_REPOSITORY_URL is required}/api/v1/packages/denikson/BepInExPack_Valheim/${BEPINEX_VERSION}/download" \
         --output /tmp/bepinex.zip \
     && echo "${BEPINEX_SHA256}  /tmp/bepinex.zip" | sha256sum --check --strict \
     && unzip -q /tmp/bepinex.zip -d /tmp/bepinex \
