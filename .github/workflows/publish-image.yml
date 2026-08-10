@@ -26,6 +26,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, valheim-image]
     outputs:
       test_hosts: ${{ steps.inventory.outputs.hosts }}
+      repository_url: ${{ steps.repository.outputs.url }}
     steps:
       - id: inventory
         name: Resolve the test Valheim hosts
@@ -34,7 +35,16 @@ jobs:
           host-group: valheim
           environment: test
 
+      - id: repository
+        name: Resolve the package repository
+        uses: end3rbyte/valheim-root/.github/actions/resolve-inventory@master
+        with:
+          host-group: mod_repository
+          environment: production
+          url-group: mod_repository
+
   build:
+    needs: resolve-inventory
     runs-on: [self-hosted, Linux, X64, valheim-image]
     timeout-minutes: 45
     env:
@@ -65,6 +75,7 @@ jobs:
         shell: bash
         env:
           VALHEIM_IMAGE: ${{ steps.image.outputs.commit_ref }}
+          LANDORIA_MOD_REPOSITORY_URL: ${{ needs.resolve-inventory.outputs.repository_url }}
         run: |
           set -euo pipefail
           CONTAINER_ENGINE=podman ./build-image.sh
