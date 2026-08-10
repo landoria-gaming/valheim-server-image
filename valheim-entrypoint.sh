@@ -60,11 +60,26 @@ if [ -n "${WORLD_PRESET:-}" ]; then
     valheim_arguments+=(-preset "$WORLD_PRESET")
 fi
 
-if [ -n "${WORLD_KEY:-}" ]; then
-    valheim_arguments+=(-setkey "$WORLD_KEY")
-elif [ -n "${WORLD_MODIFIER:-}" ]; then
-    : "${WORLD_MODIFIER_VALUE:?WORLD_MODIFIER_VALUE is required with WORLD_MODIFIER}"
-    valheim_arguments+=(-modifier "$WORLD_MODIFIER" "$WORLD_MODIFIER_VALUE")
+if [[ -n "${WORLD_KEYS:-}" ]]; then
+    IFS=',' read -r -a world_keys <<< "$WORLD_KEYS"
+    for world_key in "${world_keys[@]}"; do
+        [[ "$world_key" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "WORLD_KEYS contains an invalid key." >&2
+            exit 1
+        }
+        valheim_arguments+=(-setkey "$world_key")
+    done
+fi
+
+if [[ -n "${WORLD_MODIFIERS:-}" ]]; then
+    IFS=',' read -r -a world_modifiers <<< "$WORLD_MODIFIERS"
+    for world_modifier in "${world_modifiers[@]}"; do
+        [[ "$world_modifier" =~ ^([A-Za-z0-9._-]+)=([A-Za-z0-9._-]+)$ ]] || {
+            echo "WORLD_MODIFIERS entries must use name=value." >&2
+            exit 1
+        }
+        valheim_arguments+=(-modifier "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+    done
 fi
 
 export DOORSTOP_ENABLED=1
