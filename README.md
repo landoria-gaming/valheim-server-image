@@ -2,6 +2,8 @@
 
 This repository builds and publishes the OCI image used by `valheim-server-platform`. It owns the container filesystem, SteamCMD installation, Valheim dedicated server installation, BepInEx bootstrap, and the container entrypoint.
 
+The bundled dedicated server is installed from Valheim's `public-test` Steam branch. Clients must opt into the matching public test version before connecting.
+
 ## Build locally
 
 ```sh
