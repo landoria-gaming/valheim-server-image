@@ -30,14 +30,14 @@ jobs:
     steps:
       - id: inventory
         name: Resolve the test Valheim hosts
-        uses: end3rbyte/valheim-root/.github/actions/resolve-inventory@master
+        uses: landoria-gaming/valheim-root/.github/actions/resolve-inventory@main
         with:
           host-group: valheim
           environment: test
 
       - id: repository
         name: Resolve the package repository
-        uses: end3rbyte/valheim-root/.github/actions/resolve-inventory@master
+        uses: landoria-gaming/valheim-root/.github/actions/resolve-inventory@main
         with:
           host-group: mod_repository
           environment: production
@@ -154,5 +154,5 @@ jobs:
           set -euo pipefail
           GH_TOKEN="$(sudo cat /var/lib/landoria-secrets/github-token)"
           export GH_TOKEN
-          gh api --method POST repos/end3rbyte/valheim-root/dispatches \
+          gh api --method POST repos/landoria-gaming/valheim-root/dispatches \
             -f event_type=restart-valheim-test
