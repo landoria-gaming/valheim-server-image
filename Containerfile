@@ -28,7 +28,8 @@ RUN curl --fail --location --show-error --silent \
     && while ! /opt/steamcmd/steamcmd.sh \
         +force_install_dir /opt/valheim-server \
         +login anonymous \
-        +app_update 896660 validate \
+        +app_update 896660 -beta public-test \
+        -betapassword yesimadebackups validate \
         +quit; do \
         if [ "$attempt" -ge 3 ]; then \
             exit 1; \
