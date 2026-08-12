@@ -1,0 +1,115 @@
+---
+name: Promote the Valheim image to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful test workflow run ID (empty selects the latest main run)
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: valheim-image-production-promotion
+  cancel-in-progress: false
+
+jobs:
+  resolve-source:
+    runs-on: [self-hosted, Linux, X64, valheim-image]
+    outputs:
+      image_reference: ${{ steps.source.outputs.image_reference }}
+      production_hosts: ${{ steps.inventory.outputs.hosts }}
+    steps:
+      - id: inventory
+        name: Resolve the production Valheim hosts
+        uses: landoria-gaming/valheim-root/.github/actions/resolve-inventory@main
+        with:
+          host-group: valheim
+          environment: production
+
+      - id: source
+        name: Resolve and validate the tested image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="$REQUESTED_RUN_ID"
+          if [[ -z "$run_id" ]]; then
+            run_id="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/publish-image.yml/runs?branch=main&per_page=1" \
+              --jq '.workflow_runs[0].id')"
+          fi
+          [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "No test run was found." >&2; exit 1; }
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id")"
+          branch="$(jq -r '.head_branch' <<< "$run")"
+          sha="$(jq -r '.head_sha' <<< "$run")"
+          conclusion="$(jq -r '.conclusion' <<< "$run")"
+          test_result="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | startswith("deploy-test")) | .conclusion] | if length > 0 and all(. == "success") then "success" else "failure" end')"
+          [[ "$branch" == main && "$conclusion" == success && "$test_result" == success ]] || {
+            echo "Run $run_id is not a successful main test deployment." >&2
+            exit 1
+          }
+          repository="${GITHUB_REPOSITORY,,}"
+          echo "image_reference=ghcr.io/${repository}:sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+  promote-production:
+    needs: resolve-source
+    name: promote-production (${{ matrix.host }})
+    runs-on: [self-hosted, Linux, X64, valheim-image]
+    timeout-minutes: 20
+    strategy:
+      max-parallel: 1
+      matrix:
+        host: ${{ fromJSON(needs.resolve-source.outputs.production_hosts) }}
+    environment:
+      name: production
+    steps:
+      - name: Install, restart, and verify the tested image
+        env:
+          DEPLOY_TARGET_HOST: ${{ matrix.host }}
+          IMAGE_REFERENCE: ${{ needs.resolve-source.outputs.image_reference }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=10 \
+            "$DEPLOY_TARGET_HOST" bash -s -- "$IMAGE_REFERENCE" <<'REMOTE'
+          set -euo pipefail
+          readonly service_user=landoria-games
+          readonly service_home=/var/lib/landoria-games
+          readonly service_uid="$(id -u "$service_user")"
+          readonly -a user_command=(
+            sudo -u "$service_user" env
+            HOME="$service_home"
+            XDG_RUNTIME_DIR="/run/user/$service_uid"
+          )
+          sudo test -r /var/lib/landoria-platform-secrets/ghcr-token
+          sudo cat /var/lib/landoria-platform-secrets/ghcr-token | \
+            sudo env VALHEIM_IMAGE="$1" \
+              /opt/landoria-ops/valheim-podman/images/pull-image.sh
+          mapfile -t units < <(
+            "${user_command[@]}" systemctl --user list-units --type=service \
+              --state=running --plain --no-legend 'valheim-*.service' | awk '{ print $1 }'
+          )
+          if (( ${#units[@]} > 0 )); then
+            "${user_command[@]}" systemctl --user restart "${units[@]}"
+          fi
+          expected_id="$("${user_command[@]}" podman image inspect \
+            localhost/landoria-valheim:latest --format '{{.Id}}')"
+          for unit in "${units[@]}"; do
+            "${user_command[@]}" systemctl --user is-active --quiet "$unit"
+          done
+          while read -r running_id; do
+            [[ "$running_id" == "$expected_id" ]] || {
+              echo "A running server does not use the promoted image." >&2
+              exit 1
+            }
+          done < <("${user_command[@]}" podman ps --no-trunc --format '{{.ImageID}}')
+          echo "The tested image is installed and active on all running Valheim servers."
+          REMOTE
