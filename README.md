@@ -24,8 +24,8 @@ GitHub Actions builds the image on the `dev` self-hosted runner with rootless Po
 it to GHCR with immutable release and commit tags:
 
 ```text
-ghcr.io/end3rbyte/valheim-server-image:v1.0.0
-ghcr.io/end3rbyte/valheim-server-image:sha-COMMIT
+ghcr.io/landoria-gaming/valheim-server-image:v1.0.0
+ghcr.io/landoria-gaming/valheim-server-image:sha-COMMIT
 ```
 
 The runner must have the `dev` and `valheim-image` labels and provide Podman in its service
