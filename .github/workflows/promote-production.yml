@@ -89,6 +89,7 @@ jobs:
           readonly service_user=landoria-games
           readonly service_home=/var/lib/landoria-games
           readonly service_uid="$(id -u "$service_user")"
+          cd "$service_home"
           readonly -a user_command=(
             sudo -u "$service_user" env
             HOME="$service_home"
