@@ -2,7 +2,10 @@
 
 This repository builds and publishes the OCI image used by `valheim-server-platform`. It owns the container filesystem, SteamCMD installation, Valheim dedicated server installation, BepInEx bootstrap, and the container entrypoint.
 
-The bundled dedicated server is installed from Valheim's `public-test` Steam branch. Clients must opt into the matching public test version before connecting.
+Two image variants are built from the same source revision:
+
+- `current` installs the default Valheim Steam branch;
+- `public-test` installs the `public-test` Steam branch with its required beta password.
 
 ## Build locally
 
@@ -17,6 +20,7 @@ CONTAINER_ENGINE=docker ./build-image.sh
 ```
 
 Override the local image name with `VALHEIM_IMAGE`.
+Set `VALHEIM_CHANNEL` to `current` or `public-test`; it defaults to `current`.
 
 ## Published image
 
@@ -24,8 +28,10 @@ GitHub Actions builds the image on the `dev` self-hosted runner with rootless Po
 it to GHCR with immutable release and commit tags:
 
 ```text
-ghcr.io/landoria-gaming/valheim-server-image:v1.0.0
-ghcr.io/landoria-gaming/valheim-server-image:sha-COMMIT
+ghcr.io/landoria-gaming/valheim-server-image:v1.0.0-current
+ghcr.io/landoria-gaming/valheim-server-image:v1.0.0-public-test
+ghcr.io/landoria-gaming/valheim-server-image:sha-COMMIT-current
+ghcr.io/landoria-gaming/valheim-server-image:sha-COMMIT-public-test
 ```
 
 The runner must have the `dev` and `valheim-image` labels and provide Podman in its service

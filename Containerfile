@@ -4,6 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG BEPINEX_VERSION=5.4.2333
 ARG MOD_REPOSITORY_URL
 ARG BEPINEX_SHA256=5dd24ccbcaa9260f714b200f23c4c15547e2aa5f06906cafcc0dee56db1bf716
+ARG VALHEIM_CHANNEL=current
 
 RUN dpkg --add-architecture i386 \
     && apt-get update \
@@ -24,12 +25,16 @@ RUN curl --fail --location --show-error --silent \
         --output /tmp/steamcmd.tar.gz \
     && tar -xzf /tmp/steamcmd.tar.gz -C /opt/steamcmd \
     && rm /tmp/steamcmd.tar.gz \
+    && case "$VALHEIM_CHANNEL" in \
+        current) branch_arguments="" ;; \
+        public-test) branch_arguments="-beta public-test -betapassword yesimadebackups" ;; \
+        *) echo "Unsupported Valheim channel: $VALHEIM_CHANNEL" >&2; exit 1 ;; \
+    esac \
     && attempt=1 \
     && while ! /opt/steamcmd/steamcmd.sh \
         +force_install_dir /opt/valheim-server \
         +login anonymous \
-        +app_update 896660 -beta public-test \
-        -betapassword yesimadebackups validate \
+        +app_update 896660 $branch_arguments validate \
         +quit; do \
         if [ "$attempt" -ge 3 ]; then \
             exit 1; \
