@@ -47,6 +47,9 @@ jobs:
     needs: resolve-inventory
     runs-on: [self-hosted, Linux, X64, valheim-image]
     timeout-minutes: 45
+    strategy:
+      matrix:
+        channel: [current, public-test]
     env:
       REGISTRY: ghcr.io
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -61,20 +64,21 @@ jobs:
           set -euo pipefail
           repository="${GITHUB_REPOSITORY,,}"
           image="${REGISTRY}/${repository}"
-          commit_tag="sha-${GITHUB_SHA:0:7}"
+          commit_tag="sha-${GITHUB_SHA:0:7}-${{ matrix.channel }}"
           printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
           printf 'commit_ref=%s:%s\n' "$image" "$commit_tag" >> "$GITHUB_OUTPUT"
 
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            printf 'release_ref=%s:%s\n' "$image" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            printf 'release_ref=%s:%s-%s\n' "$image" "$GITHUB_REF_NAME" '${{ matrix.channel }}' >> "$GITHUB_OUTPUT"
           elif [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]]; then
-            printf 'release_ref=%s:latest\n' "$image" >> "$GITHUB_OUTPUT"
+            printf 'release_ref=%s:%s\n' "$image" '${{ matrix.channel }}' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build the image
         shell: bash
         env:
           VALHEIM_IMAGE: ${{ steps.image.outputs.commit_ref }}
+          VALHEIM_CHANNEL: ${{ matrix.channel }}
           LANDORIA_MOD_REPOSITORY_URL: ${{ needs.resolve-inventory.outputs.repository_url }}
         run: |
           set -euo pipefail
@@ -116,7 +120,7 @@ jobs:
           exit 0
 
   deploy-test:
-    name: deploy-test (${{ matrix.host }})
+    name: deploy-test (${{ matrix.host }}, ${{ matrix.channel }})
     needs: [build, resolve-inventory]
     runs-on: [self-hosted, Linux, X64, valheim-image]
     timeout-minutes: 20
@@ -124,6 +128,7 @@ jobs:
       max-parallel: 1
       matrix:
         host: ${{ fromJSON(needs.resolve-inventory.outputs.test_hosts) }}
+        channel: [current, public-test]
     environment:
       name: test
     steps:
@@ -134,13 +139,13 @@ jobs:
         run: |
           set -euo pipefail
           repository="${GITHUB_REPOSITORY,,}"
-          image_reference="ghcr.io/${repository}:sha-${GITHUB_SHA:0:7}"
+          image_reference="ghcr.io/${repository}:sha-${GITHUB_SHA:0:7}-${{ matrix.channel }}"
           ssh -o BatchMode=yes -o ConnectTimeout=10 \
             "$DEPLOY_TARGET_HOST" bash -s -- "$image_reference" <<'REMOTE'
           set -euo pipefail
           sudo test -r /var/lib/landoria-platform-secrets/ghcr-token
           sudo cat /var/lib/landoria-platform-secrets/ghcr-token | \
-            sudo env VALHEIM_IMAGE="$1" \
+            sudo env VALHEIM_IMAGE="$1" VALHEIM_CHANNEL='${{ matrix.channel }}' \
               /opt/landoria-ops/valheim-podman/images/pull-image.sh
           REMOTE
 

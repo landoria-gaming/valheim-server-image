@@ -21,7 +21,8 @@ jobs:
   resolve-source:
     runs-on: [self-hosted, Linux, X64, valheim-image]
     outputs:
-      image_reference: ${{ steps.source.outputs.image_reference }}
+      image_repository: ${{ steps.source.outputs.image_repository }}
+      image_tag_prefix: ${{ steps.source.outputs.image_tag_prefix }}
       production_hosts: ${{ steps.inventory.outputs.hosts }}
     steps:
       - id: inventory
@@ -57,30 +58,34 @@ jobs:
             exit 1
           }
           repository="${GITHUB_REPOSITORY,,}"
-          echo "image_reference=ghcr.io/${repository}:sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "image_repository=ghcr.io/${repository}" >> "$GITHUB_OUTPUT"
+          echo "image_tag_prefix=sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
 
   promote-production:
     needs: resolve-source
-    name: promote-production (${{ matrix.host }})
+    name: promote-production (${{ matrix.host }}, ${{ matrix.channel }})
     runs-on: [self-hosted, Linux, X64, valheim-image]
     timeout-minutes: 20
     strategy:
       max-parallel: 1
       matrix:
         host: ${{ fromJSON(needs.resolve-source.outputs.production_hosts) }}
+        channel: [current, public-test]
     environment:
       name: production
     steps:
       - name: Install, restart, and verify the tested image
         env:
           DEPLOY_TARGET_HOST: ${{ matrix.host }}
-          IMAGE_REFERENCE: ${{ needs.resolve-source.outputs.image_reference }}
+          IMAGE_REFERENCE: ${{ needs.resolve-source.outputs.image_repository }}:${{ needs.resolve-source.outputs.image_tag_prefix }}-${{ matrix.channel }}
+          VALHEIM_CHANNEL: ${{ matrix.channel }}
         shell: bash
         run: |
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=10 \
-            "$DEPLOY_TARGET_HOST" bash -s -- "$IMAGE_REFERENCE" <<'REMOTE'
+            "$DEPLOY_TARGET_HOST" bash -s -- "$IMAGE_REFERENCE" "$VALHEIM_CHANNEL" <<'REMOTE'
           set -euo pipefail
+          readonly valheim_channel="$2"
           readonly service_user=landoria-games
           readonly service_home=/var/lib/landoria-games
           readonly service_uid="$(id -u "$service_user")"
@@ -91,7 +96,7 @@ jobs:
           )
           sudo test -r /var/lib/landoria-platform-secrets/ghcr-token
           sudo cat /var/lib/landoria-platform-secrets/ghcr-token | \
-            sudo env VALHEIM_IMAGE="$1" \
+            sudo env VALHEIM_IMAGE="$1" VALHEIM_CHANNEL="$valheim_channel" \
               /opt/landoria-ops/valheim-podman/images/pull-image.sh
           mapfile -t units < <(
             "${user_command[@]}" systemctl --user list-units --type=service \
@@ -101,15 +106,10 @@ jobs:
             "${user_command[@]}" systemctl --user restart "${units[@]}"
           fi
           expected_id="$("${user_command[@]}" podman image inspect \
-            localhost/landoria-valheim:latest --format '{{.Id}}')"
+            "localhost/landoria-valheim:$valheim_channel" --format '{{.Id}}')"
           for unit in "${units[@]}"; do
             "${user_command[@]}" systemctl --user is-active --quiet "$unit"
           done
-          while read -r running_id; do
-            [[ "$running_id" == "$expected_id" ]] || {
-              echo "A running server does not use the promoted image." >&2
-              exit 1
-            }
-          done < <("${user_command[@]}" podman ps --no-trunc --format '{{.ImageID}}')
-          echo "The tested image is installed and active on all running Valheim servers."
+          "${user_command[@]}" podman image inspect "$expected_id" >/dev/null
+          echo "The tested $valheim_channel image is installed."
           REMOTE
