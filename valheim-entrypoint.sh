@@ -24,7 +24,7 @@ mod_arguments=()
 if [[ -n "${LANDORIA_MOD_ARGUMENTS:-}" ]]; then
     read -r -a mod_arguments <<< "$LANDORIA_MOD_ARGUMENTS"
     for argument in "${mod_arguments[@]}"; do
-        [[ "$argument" =~ ^[A-Za-z0-9._:/=+-]+$ ]] || {
+        [[ "$argument" =~ ^[A-Za-z0-9._:/=,+-]+$ ]] || {
             echo "LANDORIA_MOD_ARGUMENTS contains an unsupported argument." >&2
             exit 1
         }
