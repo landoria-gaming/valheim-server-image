@@ -31,6 +31,8 @@ if [[ -n "${LANDORIA_MOD_ARGUMENTS:-}" ]]; then
     done
 fi
 
+community_server_name="Landoria ${SERVER_NAME#Landoria }"
+
 mkdir -p /mods/plugins /mods/config
 if [ ! -f /mods/config/BepInEx.cfg ]; then
     cp /opt/bepinex-default-config/BepInEx.cfg /mods/config/BepInEx.cfg
@@ -43,7 +45,7 @@ ln -s /mods/config /opt/valheim-server/BepInEx/config
 valheim_arguments=(
     -nographics \
     -batchmode \
-    -name "$SERVER_NAME" \
+    -name "$community_server_name" \
     -port "$SERVER_PORT" \
     -world "$WORLD_NAME" \
     -password "$SERVER_PASSWORD" \
