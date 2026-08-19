@@ -51,12 +51,9 @@ valheim_arguments=(
     -password "$SERVER_PASSWORD" \
     -savedir /data \
     -public "${PUBLIC_SERVER:-0}" \
-    -instanceid "${VALHEIM_INSTANCE_ID:-$INSTANCE_ID}"
+    -instanceid "${VALHEIM_INSTANCE_ID:-$INSTANCE_ID}" \
+    -crossplay
 )
-
-if [ "${CROSSPLAY:-0}" = "1" ]; then
-    valheim_arguments+=(-crossplay)
-fi
 
 if [ -n "${WORLD_PRESET:-}" ]; then
     valheim_arguments+=(-preset "$WORLD_PRESET")
