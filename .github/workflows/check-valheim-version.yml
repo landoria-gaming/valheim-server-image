@@ -1,0 +1,63 @@
+name: Build and publish Valheim server image
+permissions:
+  contents: read
+concurrency:
+  group: valheim-build-cache-${{ inputs.channel || 'current' }}
+  cancel-in-progress: false
+jobs:
+  cache-steamcmd:
+    uses: ./.github/workflows/cache-steamcmd.yml
+    permissions:
+      contents: read
+      actions: write
+  cache-tcli:
+    uses: ./.github/workflows/cache-tcli.yml
+    permissions:
+      contents: read
+      actions: write
+  cache-valheim:
+    uses: ./.github/workflows/cache-valheim.yml
+    permissions:
+      contents: read
+      actions: write
+    with:
+      channel: ${{ inputs.channel || 'current' }}
+      steamcmd_cache_key: ${{ needs.cache-steamcmd.outputs.cache_key }}
+    needs: cache-steamcmd
+  cache-bepinex:
+    uses: ./.github/workflows/cache-bepinex.yml
+    permissions:
+      contents: read
+      actions: write
+    needs: cache-tcli
+    with:
+      tcli_cache_key: ${{ needs.cache-tcli.outputs.cache_key }}
+      tcli_version: ${{ needs.cache-tcli.outputs.version }}
+  build-and-publish-image:
+    needs:
+    - cache-valheim
+    - cache-bepinex
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      channel: ${{ inputs.channel || 'current' }}
+      valheim_version: ${{ needs.cache-valheim.outputs.version }}
+      valheim_build_id: ${{ needs.cache-valheim.outputs.build_id }}
+      bepinex_version: ${{ needs.cache-bepinex.outputs.version }}
+      valheim_cache_key: ${{ needs.cache-valheim.outputs.cache_key }}
+      bepinex_cache_key: ${{ needs.cache-bepinex.outputs.cache_key }}
+'on':
+  schedule:
+  - cron: 23 4 * * *
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Steam branch to cache
+        required: true
+        default: current
+        type: choice
+        options:
+        - current
+        - public-test

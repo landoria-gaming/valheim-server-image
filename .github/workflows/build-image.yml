@@ -1,0 +1,227 @@
+---
+name: "[Child] Build server image"
+on:
+  workflow_call:
+    inputs:
+      channel:
+        required: true
+        type: string
+      valheim_version:
+        required: true
+        type: string
+      valheim_build_id:
+        required: true
+        type: string
+      bepinex_version:
+        required: true
+        type: string
+      valheim_cache_key:
+        required: true
+        type: string
+      bepinex_cache_key:
+        required: true
+        type: string
+permissions:
+  contents: write
+  packages: write
+jobs:
+  build-and-publish-image:
+    concurrency:
+      group: ghcr-valheim-server-image
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VALHEIM_CHANNEL: ${{ inputs.channel }}
+      VALHEIM_SERVER_DIR: .valheim-cache/${{ inputs.channel }}
+      BEPINEX_CACHE_DIR: .valheim-cache/bepinex
+      VALHEIM_VERSION: ${{ inputs.valheim_version }}
+      VALHEIM_BUILD_ID: ${{ inputs.valheim_build_id }}
+      BEPINEX_VERSION: ${{ inputs.bepinex_version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+      - name: Restore the verified Valheim cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VALHEIM_SERVER_DIR }}
+          key: ${{ inputs.valheim_cache_key }}
+          fail-on-cache-miss: true
+      - name: Restore the verified BepInEx cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.BEPINEX_CACHE_DIR }}
+          key: ${{ inputs.bepinex_cache_key }}
+          fail-on-cache-miss: true
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, test, and publish the server image
+        shell: bash
+        run: |
+          # Run this operation in an isolated shell.
+          publish_server_image() (
+              # Run this operation in an isolated shell.
+              smoke_test_image() (
+                  # Verify that an isolated container starts the server and loads BepInEx.
+                  set -euo pipefail
+                  image="${1:?Image is required}"
+                  container="$(docker run -d -e SERVER_NAME=WorkflowSmokeTest -e WORLD_NAME=WorkflowSmokeTest \
+                      -e SERVER_PASSWORD=smoke-test-password -e PUBLIC_SERVER=0 -e CROSSPLAY=0 "$image")"
+                  trap 'docker stop --time 45 "$container" >/dev/null; docker rm -v "$container" >/dev/null' EXIT
+                  log="$(mktemp)"
+                  for ((attempt=0; attempt<90; attempt++)); do
+                      docker logs "$container" > "$log" 2>&1
+                      if grep -q 'Chainloader startup complete' "$log" && grep -q 'Game server connected' "$log"; then
+                          cat "$log"
+                          rm -f -- "$log"
+                          echo '[Image] Smoke test passed: BepInEx loaded and game server connected.'
+                          exit 0
+                      fi
+                      if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != true ]]; then break; fi
+                      sleep 2
+                  done
+                  cat "$log" >&2
+                  rm -f -- "$log"
+                  echo '[Image] Smoke test failed: server or BepInEx did not become ready.' >&2
+                  exit 1
+              )
+              # Build and publish a tested server image only when its version tag is missing.
+              set -euo pipefail
+              : "${VALHEIM_VERSION:?}" "${VALHEIM_BUILD_ID:?}" "${BEPINEX_VERSION:?}"
+              : "${VALHEIM_SERVER_DIR:?}" "${BEPINEX_CACHE_DIR:?}" "${GITHUB_REPOSITORY:?}"
+              # Read a build ID from a Steam manifest or a specific app-info branch.
+              read_build_id() {
+                  awk -v branch="$1" '
+                      {
+                          line = $0
+                          while (match(line, /"[^\"]*"|[{}]/)) {
+                              token = substr(line, RSTART, RLENGTH)
+                              line = substr(line, RSTART + RLENGTH)
+                              if (token == "{") {
+                                  scope[++depth] = previous
+                                  previous = ""
+                              } else if (token == "}") {
+                                  delete scope[depth--]
+                                  previous = ""
+                              } else {
+                                  token = substr(token, 2, length(token) - 2)
+                                  if (previous == "buildid" && token ~ /^[0-9]+$/ &&
+                                      ((branch == "" && scope[depth] == "AppState") ||
+                                       (scope[1] == "896660" && scope[depth] == branch &&
+                                        scope[depth - 1] == "branches"))) {
+                                      print token
+                                  }
+                                  previous = token
+                              }
+                          }
+                      }
+                  '
+              }
+
+
+              # Validate a dedicated server manifest and print its installed build ID.
+              read_installed_build_id() {
+                  local manifest="$1" build_id
+                  if ! awk '/"appid"[[:space:]]+"896660"/ { found = 1 } END { exit !found }' "$manifest"; then
+                      echo "Manifest must belong to the Valheim dedicated server (896660)." >&2
+                      return 1
+                  fi
+                  build_id="$(read_build_id '' < "$manifest")"
+                  if [[ ! "$build_id" =~ ^[0-9]+$ ]]; then
+                      echo "Could not read a unique installed build ID." >&2
+                      return 1
+                  fi
+                  printf '%s\n' "$build_id"
+              }
+              [[ "$(read_installed_build_id "$VALHEIM_SERVER_DIR/steamapps/appmanifest_896660.acf")" == "$VALHEIM_BUILD_ID" ]] || exit 1
+              [[ "$VALHEIM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+              jq -e --arg version "$BEPINEX_VERSION" '.version_number == $version' \
+                  "$BEPINEX_CACHE_DIR/package/manifest.json" >/dev/null
+              grep -Fx "VALHEIM_VERSION=$VALHEIM_VERSION" "$VALHEIM_SERVER_DIR/image-metadata.env" >/dev/null
+              fingerprint="$({ cat Dockerfile valheim-entrypoint.sh; declare -f publish_server_image; } | sha256sum | cut -c1-12)"
+              image="ghcr.io/${GITHUB_REPOSITORY,,}"
+              tag="valheim-server-$VALHEIM_VERSION-bepinex-$BEPINEX_VERSION"
+              if [[ "$VALHEIM_CHANNEL" != current ]]; then tag="$VALHEIM_CHANNEL-$tag"; fi
+              printf '[Image] Valheim %s; Build ID %s; BepInEx %s\n' "$VALHEIM_VERSION" "$VALHEIM_BUILD_ID" "$BEPINEX_VERSION"
+              if docker buildx imagetools inspect "$image:$tag" --format '{{json .Image}}' 2>/dev/null |
+                  jq -e --arg build "$VALHEIM_BUILD_ID" --arg fingerprint "$fingerprint" \
+                      '.config.Labels["io.landoria.valheim.build-id"] == $build and
+                       .config.Labels["io.landoria.image.fingerprint"] == $fingerprint' >/dev/null; then
+                  result='UP TO DATE: image already published; build skipped'
+              else
+                  context="$(mktemp -d "$RUNNER_TEMP/valheim-image.XXXXXX")"
+                  trap 'rm -rf -- "$context"' EXIT
+                  mkdir -p "$context/valheim" "$context/bepinex"
+                  cp -a "$VALHEIM_SERVER_DIR/." "$context/valheim/"
+                  cp -a "$BEPINEX_CACHE_DIR/package/BepInExPack_Valheim/." "$context/bepinex/"
+                  cp Dockerfile valheim-entrypoint.sh "$context/"
+                  docker build --pull --build-arg "VALHEIM_VERSION=$VALHEIM_VERSION" \
+                      --build-arg "VALHEIM_BUILD_ID=$VALHEIM_BUILD_ID" --build-arg "BEPINEX_VERSION=$BEPINEX_VERSION" \
+                      --build-arg "IMAGE_FINGERPRINT=$fingerprint" --build-arg "IMAGE_REVISION=$GITHUB_SHA" -t "$image:$tag" "$context"
+                  smoke_test_image "$image:$tag"
+                  docker push "$image:$tag"
+                  docker tag "$image:$tag" "$image:$VALHEIM_CHANNEL"
+                  docker push "$image:$VALHEIM_CHANNEL"
+                  if [[ "$VALHEIM_CHANNEL" == current ]]; then
+                      docker tag "$image:$tag" "$image:$VALHEIM_VERSION"
+                      docker push "$image:$VALHEIM_VERSION"
+                      docker tag "$image:$tag" "$image:latest"
+                      docker push "$image:latest"
+                  fi
+                  result='PUBLISHED: server started and BepInEx loaded successfully'
+              fi
+              printf '[Image] %s\n' "$result"
+              {
+                  printf '### Dedicated server image\n\n| Item | Value |\n| --- | --- |\n'
+                  printf '| Valheim version | %s |\n| Steam Build ID | %s |\n| BepInEx | %s |\n' "$VALHEIM_VERSION" "$VALHEIM_BUILD_ID" "$BEPINEX_VERSION"
+                  if [[ "$VALHEIM_CHANNEL" == current ]]; then
+                      printf '| Version tag | `%s:%s` |\n' "$image" "$VALHEIM_VERSION"
+                  fi
+                  printf '| Image | `%s:%s` |\n| Result | %s |\n' "$image" "$tag" "$result"
+              } >> "$GITHUB_STEP_SUMMARY"
+          )
+
+          publish_server_image
+      - name: Update the README version badges
+        if: inputs.channel == 'current' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Update static badge URLs after stable image publication, including private repositories.
+          set -euo pipefail
+          endpoint="repos/$GITHUB_REPOSITORY/contents/README.md"
+          document="$(gh api "$endpoint?ref=main")"
+          sha="$(jq -r .sha <<< "$document")"
+          work_dir="$(mktemp -d "$RUNNER_TEMP/valheim-badges.XXXXXX")"
+          trap 'rm -rf -- "$work_dir"' EXIT
+          jq -r .content <<< "$document" | tr -d '\n' | base64 --decode > "$work_dir/README.md"
+          cp "$work_dir/README.md" "$work_dir/original.md"
+          python3 - "$work_dir/README.md" <<'PY'
+          import os, re, sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          for label, variable, color in [('Valheim', 'VALHEIM_VERSION', 'blue'), ('BepInEx', 'BEPINEX_VERSION', 'green')]:
+              version = os.environ[variable]
+              assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
+              pattern = rf'https://img\.shields\.io/badge/{label}-[0-9.]+-{color}'
+              text, count = re.subn(pattern, f'https://img.shields.io/badge/{label}-{version}-{color}', text)
+              assert count == 1, f'Missing or duplicate {label} badge'
+          path.write_text(text)
+          PY
+          if cmp -s "$work_dir/original.md" "$work_dir/README.md"; then
+              echo '[Badges] Versions unchanged; README update skipped.'
+              exit 0
+          fi
+          gh api --method PUT "$endpoint" -f branch=main -f "sha=$sha" \
+              -f 'message=Update published image version badges' \
+              -f "content=$(base64 -w0 "$work_dir/README.md")" >/dev/null
+          printf '[Badges] Updated README: Valheim %s; BepInEx %s.\n' "$VALHEIM_VERSION" "$BEPINEX_VERSION"

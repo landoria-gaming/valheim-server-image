@@ -1,0 +1,55 @@
+---
+name: Clean up GHCR images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: ghcr-valheim-server-image
+      cancel-in-progress: false
+    steps:
+      - name: Delete all image versions except the most recent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Keep the newest package version and delete all older versions.
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == landoria-gaming/valheim-server-image ]] || exit 1
+          endpoint=/orgs/landoria-gaming/packages/container/valheim-server-image/versions
+          versions="$(gh api "$endpoint?per_page=100" --paginate --slurp | jq 'add')"
+          count="$(jq 'length' <<< "$versions")"
+          if [[ "$count" == 0 ]]; then
+            echo '[GHCR] No images to clean up.'
+            printf '### GHCR cleanup\n\nNo images found.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          newest="$(jq 'sort_by(.created_at, .id) | last' <<< "$versions")"
+          keep_id="$(jq -r '.id' <<< "$newest")"
+          digest="$(jq -r '.name' <<< "$newest")"
+          tags="$(jq -r '.metadata.container.tags | join(", ")' <<< "$newest")"
+          printf '[GHCR] Keeping newest version %s: %s; tags: %s\n' "$keep_id" "$digest" "$tags"
+          obsolete_ids="$(jq -r --argjson keep "$keep_id" '.[] | select(.id != $keep) | .id' <<< "$versions")"
+          deleted=0
+          while IFS= read -r id; do
+            [[ -n "$id" ]] || continue
+            [[ "$id" =~ ^[0-9]+$ ]] || exit 1
+            printf '[GHCR] Deleting previous version %s\n' "$id"
+            gh api --method DELETE "$endpoint/$id"
+            deleted=$((deleted + 1))
+          done <<< "$obsolete_ids"
+          remaining="$(gh api "$endpoint?per_page=100" --paginate --slurp | jq 'add')"
+          jq -e --argjson keep "$keep_id" 'length == 1 and .[0].id == $keep' <<< "$remaining" >/dev/null
+          printf '[GHCR] Deleted %s versions; verified exactly one remaining image.\n' "$deleted"
+          {
+            printf '### GHCR cleanup\n\n| Item | Result |\n| --- | --- |\n'
+            printf '| Deleted versions | %s |\n| Retained version ID | %s |\n' "$deleted" "$keep_id"
+            printf '| Image digest | `%s` |\n| Retained tags | %s |\n' "$digest" "${tags:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"

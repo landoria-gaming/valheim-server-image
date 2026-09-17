@@ -1,0 +1,629 @@
+name: "[Child] Cache Valheim"
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cache-valheim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      cache_key: ${{ steps.version.outputs.cache_key }}
+      version: ${{ steps.version.outputs.valheim_version }}
+      build_id: ${{ steps.published.outputs.published_build_id }}
+    env:
+      VALHEIM_CHANNEL: ${{ inputs.channel }}
+      STEAMCMD_CACHE_DIR: .valheim-cache/steamcmd
+      VALHEIM_MANIFEST: ''
+      VALHEIM_SERVER_DIR: .valheim-cache/${{ inputs.channel }}
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v6
+    - name: Restore the prepared SteamCMD cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.STEAMCMD_CACHE_DIR }}
+        key: ${{ inputs.steamcmd_cache_key }}
+        fail-on-cache-miss: true
+    - name: Prepare the SteamCMD runtime
+      shell: bash
+      run: |
+        # Install system libraries and use SteamCMD from the prepared cache.
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends ca-certificates curl jq libc6-i386 lib32gcc-s1 lib32stdc++6
+        [[ -s "$STEAMCMD_CACHE_DIR/steamcmd.sh" ]] || exit 1
+        work_dir="$(mktemp -d "$RUNNER_TEMP/valheim-build.XXXXXX")"
+        printf 'VALHEIM_BUILD_WORK_DIR=%s\nSTEAMCMD=%s/%s/steamcmd.sh\n' "$work_dir" "$GITHUB_WORKSPACE" "$STEAMCMD_CACHE_DIR" >> "$GITHUB_ENV"
+        echo '[SteamCMD] Prepared cache restored; bootstrap download skipped.'
+    - name: Query the published build
+      id: published
+      shell: bash
+      run: |
+        # Run this operation in an isolated shell.
+        check_valheim_version() (
+            # Query published Valheim builds and optionally compare a local server manifest.
+            set -euo pipefail
+
+            steamcmd="${STEAMCMD:-}"
+            manifest="${VALHEIM_MANIFEST:-}"
+            valheim_channel="${VALHEIM_CHANNEL:-current}"
+            case "$valheim_channel" in
+                current) steam_branch=public ;;
+                public-test) steam_branch=public-test ;;
+                *) echo "VALHEIM_CHANNEL must be current or public-test." >&2; exit 1 ;;
+            esac
+            if [[ -z "$steamcmd" ]]; then
+                for candidate in steamcmd steamcmd.exe steamcmd.sh; do
+                    if command -v "$candidate" >/dev/null 2>&1; then
+                        steamcmd="$candidate"
+                        break
+                    fi
+                done
+            fi
+            if [[ -z "$steamcmd" ]] || ! command -v "$steamcmd" >/dev/null 2>&1; then
+                echo "SteamCMD is unavailable. Set STEAMCMD to its executable or script path." >&2
+                exit 1
+            fi
+            if [[ -n "$manifest" && ! -r "$manifest" ]]; then
+                echo "VALHEIM_MANIFEST is not readable: $manifest" >&2
+                exit 1
+            fi
+
+            # Read a build ID from a Steam manifest or a specific app-info branch.
+            read_build_id() {
+                awk -v branch="$1" '
+                    {
+                        line = $0
+                        while (match(line, /"[^\"]*"|[{}]/)) {
+                            token = substr(line, RSTART, RLENGTH)
+                            line = substr(line, RSTART + RLENGTH)
+                            if (token == "{") {
+                                scope[++depth] = previous
+                                previous = ""
+                            } else if (token == "}") {
+                                delete scope[depth--]
+                                previous = ""
+                            } else {
+                                token = substr(token, 2, length(token) - 2)
+                                if (previous == "buildid" && token ~ /^[0-9]+$/ &&
+                                    ((branch == "" && scope[depth] == "AppState") ||
+                                     (scope[1] == "896660" && scope[depth] == branch &&
+                                      scope[depth - 1] == "branches"))) {
+                                    print token
+                                }
+                                previous = token
+                            }
+                        }
+                    }
+                '
+            }
+
+
+            # Validate a dedicated server manifest and print its installed build ID.
+            read_installed_build_id() {
+                local manifest="$1" build_id
+                if ! awk '/"appid"[[:space:]]+"896660"/ { found = 1 } END { exit !found }' "$manifest"; then
+                    echo "Manifest must belong to the Valheim dedicated server (896660)." >&2
+                    return 1
+                fi
+                build_id="$(read_build_id '' < "$manifest")"
+                if [[ ! "$build_id" =~ ^[0-9]+$ ]]; then
+                    echo "Could not read a unique installed build ID." >&2
+                    return 1
+                fi
+                printf '%s\n' "$build_id"
+            }
+
+            temporary_dir="$(mktemp -d)"
+            trap 'rm -rf -- "$temporary_dir"' EXIT
+            # Refresh Steam metadata without installing or updating the game.
+            if ! "$steamcmd" +login anonymous +app_info_update 1 +app_info_print 896660 +quit \
+                > "$temporary_dir/app-info" 2>&1; then
+                cat "$temporary_dir/app-info" >&2
+                echo "Steam app-info query failed." >&2
+                exit 1
+            fi
+
+            steamcmd_version="$(sed -nE 's/.*Steam Console Client.*version ([0-9]+).*/\1/p' "$temporary_dir/app-info" | sort -u)"
+            if [[ "$steamcmd_version" =~ ^[0-9]+$ ]]; then
+                printf 'steamcmd_version=%s\n' "$steamcmd_version"
+            fi
+
+            published_build_id="$(read_build_id "$steam_branch" < "$temporary_dir/app-info")"
+            if [[ ! "$published_build_id" =~ ^[0-9]+$ ]]; then
+                echo "Could not read a unique published build ID for $valheim_channel." >&2
+                exit 1
+            fi
+            printf 'channel=%s\npublished_build_id=%s\n' "$valheim_channel" "$published_build_id"
+            printf '[Valheim/%s] Published Steam Build ID: %s\n' "$valheim_channel" "$published_build_id" >&2
+            if [[ -n "$manifest" ]]; then
+                installed_build_id="$(read_installed_build_id "$manifest")"
+                status=update-available
+                if [[ "$installed_build_id" == "$published_build_id" ]]; then
+                    status=up-to-date
+                fi
+                printf 'installed_build_id=%s\nstatus=%s\n' "$installed_build_id" "$status"
+            fi
+        )
+
+        set -euo pipefail
+        check_valheim_version | tee "$VALHEIM_BUILD_WORK_DIR/published.txt"
+        cat "$VALHEIM_BUILD_WORK_DIR/published.txt" >> "$GITHUB_OUTPUT"
+    - name: Restore the server cache
+      id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.VALHEIM_SERVER_DIR }}
+        key: valheim-server-v1-linux-x64-${{ env.VALHEIM_CHANNEL }}-${{ steps.published.outputs.published_build_id }}-version-
+        restore-keys: |
+          valheim-server-v1-linux-x64-${{ env.VALHEIM_CHANNEL }}-${{ steps.published.outputs.published_build_id }}-version-
+          valheim-server-v1-linux-x64-${{ env.VALHEIM_CHANNEL }}-
+    - name: Report restored Valheim cache
+      shell: bash
+      env:
+        COMPONENT: Valheim (${{ env.VALHEIM_CHANNEL }}, Steam Build ID)
+        PUBLISHED_VERSION: ${{ steps.published.outputs.published_build_id }}
+        CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        RESTORED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+      run: &id002 |
+        # Run this operation in an isolated shell.
+        report_download_cache() (
+            # Report restored cache details and version comparison in logs and the job summary.
+            set -euo pipefail
+            : "${COMPONENT:-COMPONENT is required}"
+            : "${PUBLISHED_VERSION:-PUBLISHED_VERSION is required}"
+            : "${CACHE_KEY:-CACHE_KEY is required}"
+            restored_key="${RESTORED_CACHE_KEY:-}"
+            cache_state='not found'
+            if [[ "$restored_key" == "$CACHE_KEY" ]]; then
+                cache_state='exact version restored'
+            elif [[ -n "$restored_key" ]]; then
+                cache_state='fallback cache restored'
+            fi
+            printf '[%s] Published version: %s\n' "$COMPONENT" "$PUBLISHED_VERSION"
+            if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                printf '[%s] Steam Build ID: %s\n' "$COMPONENT" "$STEAM_BUILD_ID"
+            fi
+            printf '[%s] Cache: %s\n' "$COMPONENT" "$cache_state"
+            printf '[%s] Requested cache key: %s\n' "$COMPONENT" "$CACHE_KEY"
+            printf '[%s] Restored cache key: %s\n' "$COMPONENT" "${restored_key:-none}"
+            if [[ -z "${RESULT_FILE:-}" ]]; then
+                exit 0
+            fi
+            cached_version="$(awk -F= '/^cached_(build_id|version)=/ { print $2 }' "$COMPARISON_FILE")"
+            status="$(awk -F= '/^status=/ { print $2 }' "$RESULT_FILE")"
+            case "$status" in
+                up-to-date) outcome='UP TO DATE — download skipped; current version already cached' ;;
+                downloaded) outcome='UPDATED — download verified; current version saved in cache' ;;
+                *) echo "Unexpected cache result: $status" >&2; exit 1 ;;
+            esac
+            if [[ "${VERIFY_CACHE:-0}" == 1 ]]; then
+                if ! gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_KEY" --limit 100 --json key |
+                    jq -e --arg key "$CACHE_KEY" 'any(.[]; .key == $key)' >/dev/null; then
+                    printf '[%s] CACHE MISSING: expected version %s under key %s.\n' \
+                        "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY" >&2
+                    exit 1
+                fi
+                printf '[%s] Confirmed in GitHub Actions cache: version %s; key %s\n' \
+                    "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY"
+            fi
+            printf '[%s] Previously cached version: %s\n' "$COMPONENT" "$cached_version"
+            printf '[%s] %s: %s\n' "$COMPONENT" "$PUBLISHED_VERSION" "$outcome"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                {
+                    printf '### %s\n\n' "$COMPONENT"
+                    printf '| Item | Result |\n| --- | --- |\n'
+                    printf '| Published version | %s |\n| Previously cached version | %s |\n' "$PUBLISHED_VERSION" "$cached_version"
+                    printf '| Cache restored | %s |\n| Result | %s |\n' "$cache_state" "$outcome"
+                    if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                        printf '| Valheim version | %s |\n| Steam Build ID | %s |\n' "$PUBLISHED_VERSION" "$STEAM_BUILD_ID"
+                    fi
+                    printf '| Current cache key | `%s` |\n' "$CACHE_KEY"
+                } >> "$GITHUB_STEP_SUMMARY"
+            fi
+        )
+
+        report_download_cache
+    - name: Compare cached and published builds
+      id: comparison
+      shell: bash
+      env:
+        PUBLISHED_BUILD_ID: ${{ steps.published.outputs.published_build_id }}
+        CACHE_CHECK_ONLY: '1'
+      run: |
+        # Run this operation in an isolated shell.
+        cache_valheim_build() (
+            # Update an isolated server download only when its cached Steam build differs.
+            set -euo pipefail
+
+            : "${STEAMCMD:?STEAMCMD is required}"
+            : "${VALHEIM_SERVER_DIR:?VALHEIM_SERVER_DIR is required}"
+            : "${PUBLISHED_BUILD_ID:?PUBLISHED_BUILD_ID is required}"
+            [[ "$PUBLISHED_BUILD_ID" =~ ^[0-9]+$ ]] || {
+                echo "PUBLISHED_BUILD_ID must be numeric." >&2
+                exit 1
+            }
+            branch_arguments=()
+            case "${VALHEIM_CHANNEL:-current}" in
+                current) branch_arguments=(-beta public) ;;
+                public-test) branch_arguments=(-beta public-test -betapassword yesimadebackups) ;;
+                *) echo "VALHEIM_CHANNEL must be current or public-test." >&2; exit 1 ;;
+            esac
+            # Read a build ID from a Steam manifest or a specific app-info branch.
+            read_build_id() {
+                awk -v branch="$1" '
+                    {
+                        line = $0
+                        while (match(line, /"[^\"]*"|[{}]/)) {
+                            token = substr(line, RSTART, RLENGTH)
+                            line = substr(line, RSTART + RLENGTH)
+                            if (token == "{") {
+                                scope[++depth] = previous
+                                previous = ""
+                            } else if (token == "}") {
+                                delete scope[depth--]
+                                previous = ""
+                            } else {
+                                token = substr(token, 2, length(token) - 2)
+                                if (previous == "buildid" && token ~ /^[0-9]+$/ &&
+                                    ((branch == "" && scope[depth] == "AppState") ||
+                                     (scope[1] == "896660" && scope[depth] == branch &&
+                                      scope[depth - 1] == "branches"))) {
+                                    print token
+                                }
+                                previous = token
+                            }
+                        }
+                    }
+                '
+            }
+
+
+            # Validate a dedicated server manifest and print its installed build ID.
+            read_installed_build_id() {
+                local manifest="$1" build_id
+                if ! awk '/"appid"[[:space:]]+"896660"/ { found = 1 } END { exit !found }' "$manifest"; then
+                    echo "Manifest must belong to the Valheim dedicated server (896660)." >&2
+                    return 1
+                fi
+                build_id="$(read_build_id '' < "$manifest")"
+                if [[ ! "$build_id" =~ ^[0-9]+$ ]]; then
+                    echo "Could not read a unique installed build ID." >&2
+                    return 1
+                fi
+                printf '%s\n' "$build_id"
+            }
+            mkdir -p -- "$VALHEIM_SERVER_DIR"
+            VALHEIM_SERVER_DIR="$(CDPATH='' cd -- "$VALHEIM_SERVER_DIR" && pwd)"
+            manifest="$VALHEIM_SERVER_DIR/steamapps/appmanifest_896660.acf"
+            cached_build_id=none
+            if [[ -f "$manifest" ]]; then
+                cached_build_id="$(read_installed_build_id "$manifest")"
+            fi
+            printf 'cached_build_id=%s\npublished_build_id=%s\n' "$cached_build_id" "$PUBLISHED_BUILD_ID"
+            printf '[Valheim/%s] Cached Build ID: %s; published Build ID: %s\n' \
+                "${VALHEIM_CHANNEL:-current}" "$cached_build_id" "$PUBLISHED_BUILD_ID" >&2
+            if [[ "$cached_build_id" == "$PUBLISHED_BUILD_ID" ]]; then
+                test -s "$VALHEIM_SERVER_DIR/valheim_server.x86_64"
+                printf '[Valheim] UP TO DATE: build %s is cached. Download skipped.\n' "$cached_build_id" >&2
+                echo 'status=up-to-date'
+                exit 0
+            fi
+            if [[ "${CACHE_CHECK_ONLY:-0}" == 1 ]]; then
+                printf '[Valheim] DOWNLOAD REQUIRED: cached build %s differs from published build %s.\n' \
+                    "$cached_build_id" "$PUBLISHED_BUILD_ID" >&2
+                echo 'status=update-available'
+                exit 0
+            fi
+
+            mkdir -p -- "$VALHEIM_SERVER_DIR"
+            temporary_dir="$(mktemp -d)"
+            trap 'rm -rf -- "$temporary_dir"' EXIT
+            printf '[Valheim] Downloading and validating build %s...\n' "$PUBLISHED_BUILD_ID" >&2
+            if ! "$STEAMCMD" +force_install_dir "$VALHEIM_SERVER_DIR" +login anonymous \
+                +app_update 896660 "${branch_arguments[@]}" validate +quit \
+                > "$temporary_dir/download.log" 2>&1; then
+                cat "$temporary_dir/download.log" >&2
+                exit 1
+            fi
+            if ! grep -Fq "Success! App '896660' fully installed." "$temporary_dir/download.log"; then
+                cat "$temporary_dir/download.log" >&2
+                echo "SteamCMD did not confirm a complete installation." >&2
+                exit 1
+            fi
+            installed_build_id="$(read_installed_build_id "$manifest")"
+            if [[ "$installed_build_id" != "$PUBLISHED_BUILD_ID" ]]; then
+                echo "Steam changed builds during the download; rerun before caching." >&2
+                exit 1
+            fi
+            test -s "$VALHEIM_SERVER_DIR/valheim_server.x86_64"
+            printf '[Valheim] Download complete: build %s verified. Ready to save in cache.\n' "$installed_build_id" >&2
+            echo 'status=downloaded'
+        )
+
+        set -euo pipefail
+        cache_valheim_build | tee "$VALHEIM_BUILD_WORK_DIR/comparison.txt"
+        cat "$VALHEIM_BUILD_WORK_DIR/comparison.txt" >> "$GITHUB_OUTPUT"
+
+        cp "$VALHEIM_BUILD_WORK_DIR/comparison.txt" "$VALHEIM_BUILD_WORK_DIR/result.txt"
+    - name: Remove obsolete server caches
+      if: steps.comparison.outputs.status == 'update-available'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_PREFIX: valheim-server-v1-linux-x64-${{ env.VALHEIM_CHANNEL }}-
+        CACHE_KEEP_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+      run: &id001 |
+        # Run this operation in an isolated shell.
+        prune_workflow_cache() (
+            # Delete obsolete GitHub Actions caches for one downloaded component.
+            set -euo pipefail
+            : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+            : "${CACHE_PREFIX:?CACHE_PREFIX is required}"
+            : "${CACHE_KEEP_KEY:?CACHE_KEEP_KEY is required}"
+            case "$CACHE_PREFIX" in
+                valheim-server-v1-linux-x64-current-|valheim-server-v1-linux-x64-public-test-|valheim-bepinex-v1-|steamcmd-v1-linux-x64-|tcli-v1-linux-x64-) ;;
+                *) echo "Unsupported workflow cache prefix." >&2; exit 1 ;;
+            esac
+            [[ "$CACHE_KEEP_KEY" == "$CACHE_PREFIX"* ]] || exit 1
+            obsolete_ids="$(gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_PREFIX" \
+                --limit 10000 --json id,key |
+                jq -r --arg keep "$CACHE_KEEP_KEY" '.[] | select(.key != $keep) | .id')"
+            if [[ -z "$obsolete_ids" ]]; then
+                printf '[Cache] No obsolete caches to delete. Keeping: %s\n' "$CACHE_KEEP_KEY"
+            fi
+            while IFS= read -r cache_id; do
+                [[ -n "$cache_id" ]] || continue
+                [[ "$cache_id" =~ ^[0-9]+$ ]] || exit 1
+                printf '[Cache] Deleting obsolete cache ID %s before downloading a new version.\n' "$cache_id"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+            done <<< "$obsolete_ids"
+        )
+
+        prune_workflow_cache
+    - name: Download the new server build
+      id: download
+      if: steps.comparison.outputs.status == 'update-available'
+      shell: bash
+      env:
+        PUBLISHED_BUILD_ID: ${{ steps.published.outputs.published_build_id }}
+      run: |
+        # Run this operation in an isolated shell.
+        reset_download_cache() (
+            # Remove old files only from a known workspace download cache directory.
+            set -euo pipefail
+            cache_path="${1:?Cache path is required}"
+            case "$cache_path" in
+                .valheim-cache/current|.valheim-cache/public-test|.valheim-cache/bepinex) ;;
+                *) echo "Unsupported download cache directory." >&2; exit 1 ;;
+            esac
+            workspace="$(pwd -P)"
+            if [[ -L .valheim-cache || -L "$cache_path" ]]; then
+                echo "Download cache directories must not be symlinks." >&2
+                exit 1
+            fi
+            if [[ -d "$cache_path" ]]; then
+                resolved_path="$(CDPATH='' cd -- "$cache_path" && pwd -P)"
+                [[ "$resolved_path" == "$workspace/$cache_path" ]] || {
+                    echo "Download cache resolves outside its expected workspace path." >&2
+                    exit 1
+                }
+                rm -rf -- "$resolved_path"
+            fi
+            mkdir -p -- "$cache_path"
+        )
+
+        # Run this operation in an isolated shell.
+        cache_valheim_build() (
+            # Update an isolated server download only when its cached Steam build differs.
+            set -euo pipefail
+
+            : "${STEAMCMD:?STEAMCMD is required}"
+            : "${VALHEIM_SERVER_DIR:?VALHEIM_SERVER_DIR is required}"
+            : "${PUBLISHED_BUILD_ID:?PUBLISHED_BUILD_ID is required}"
+            [[ "$PUBLISHED_BUILD_ID" =~ ^[0-9]+$ ]] || {
+                echo "PUBLISHED_BUILD_ID must be numeric." >&2
+                exit 1
+            }
+            branch_arguments=()
+            case "${VALHEIM_CHANNEL:-current}" in
+                current) branch_arguments=(-beta public) ;;
+                public-test) branch_arguments=(-beta public-test -betapassword yesimadebackups) ;;
+                *) echo "VALHEIM_CHANNEL must be current or public-test." >&2; exit 1 ;;
+            esac
+            # Read a build ID from a Steam manifest or a specific app-info branch.
+            read_build_id() {
+                awk -v branch="$1" '
+                    {
+                        line = $0
+                        while (match(line, /"[^\"]*"|[{}]/)) {
+                            token = substr(line, RSTART, RLENGTH)
+                            line = substr(line, RSTART + RLENGTH)
+                            if (token == "{") {
+                                scope[++depth] = previous
+                                previous = ""
+                            } else if (token == "}") {
+                                delete scope[depth--]
+                                previous = ""
+                            } else {
+                                token = substr(token, 2, length(token) - 2)
+                                if (previous == "buildid" && token ~ /^[0-9]+$/ &&
+                                    ((branch == "" && scope[depth] == "AppState") ||
+                                     (scope[1] == "896660" && scope[depth] == branch &&
+                                      scope[depth - 1] == "branches"))) {
+                                    print token
+                                }
+                                previous = token
+                            }
+                        }
+                    }
+                '
+            }
+
+
+            # Validate a dedicated server manifest and print its installed build ID.
+            read_installed_build_id() {
+                local manifest="$1" build_id
+                if ! awk '/"appid"[[:space:]]+"896660"/ { found = 1 } END { exit !found }' "$manifest"; then
+                    echo "Manifest must belong to the Valheim dedicated server (896660)." >&2
+                    return 1
+                fi
+                build_id="$(read_build_id '' < "$manifest")"
+                if [[ ! "$build_id" =~ ^[0-9]+$ ]]; then
+                    echo "Could not read a unique installed build ID." >&2
+                    return 1
+                fi
+                printf '%s\n' "$build_id"
+            }
+            mkdir -p -- "$VALHEIM_SERVER_DIR"
+            VALHEIM_SERVER_DIR="$(CDPATH='' cd -- "$VALHEIM_SERVER_DIR" && pwd)"
+            manifest="$VALHEIM_SERVER_DIR/steamapps/appmanifest_896660.acf"
+            cached_build_id=none
+            if [[ -f "$manifest" ]]; then
+                cached_build_id="$(read_installed_build_id "$manifest")"
+            fi
+            printf 'cached_build_id=%s\npublished_build_id=%s\n' "$cached_build_id" "$PUBLISHED_BUILD_ID"
+            printf '[Valheim/%s] Cached Build ID: %s; published Build ID: %s\n' \
+                "${VALHEIM_CHANNEL:-current}" "$cached_build_id" "$PUBLISHED_BUILD_ID" >&2
+            if [[ "$cached_build_id" == "$PUBLISHED_BUILD_ID" ]]; then
+                test -s "$VALHEIM_SERVER_DIR/valheim_server.x86_64"
+                printf '[Valheim] UP TO DATE: build %s is cached. Download skipped.\n' "$cached_build_id" >&2
+                echo 'status=up-to-date'
+                exit 0
+            fi
+            if [[ "${CACHE_CHECK_ONLY:-0}" == 1 ]]; then
+                printf '[Valheim] DOWNLOAD REQUIRED: cached build %s differs from published build %s.\n' \
+                    "$cached_build_id" "$PUBLISHED_BUILD_ID" >&2
+                echo 'status=update-available'
+                exit 0
+            fi
+
+            mkdir -p -- "$VALHEIM_SERVER_DIR"
+            temporary_dir="$(mktemp -d)"
+            trap 'rm -rf -- "$temporary_dir"' EXIT
+            printf '[Valheim] Downloading and validating build %s...\n' "$PUBLISHED_BUILD_ID" >&2
+            if ! "$STEAMCMD" +force_install_dir "$VALHEIM_SERVER_DIR" +login anonymous \
+                +app_update 896660 "${branch_arguments[@]}" validate +quit \
+                > "$temporary_dir/download.log" 2>&1; then
+                cat "$temporary_dir/download.log" >&2
+                exit 1
+            fi
+            if ! grep -Fq "Success! App '896660' fully installed." "$temporary_dir/download.log"; then
+                cat "$temporary_dir/download.log" >&2
+                echo "SteamCMD did not confirm a complete installation." >&2
+                exit 1
+            fi
+            installed_build_id="$(read_installed_build_id "$manifest")"
+            if [[ "$installed_build_id" != "$PUBLISHED_BUILD_ID" ]]; then
+                echo "Steam changed builds during the download; rerun before caching." >&2
+                exit 1
+            fi
+            test -s "$VALHEIM_SERVER_DIR/valheim_server.x86_64"
+            printf '[Valheim] Download complete: build %s verified. Ready to save in cache.\n' "$installed_build_id" >&2
+            echo 'status=downloaded'
+        )
+
+        set -euo pipefail
+        reset_download_cache "$VALHEIM_SERVER_DIR"
+        cache_valheim_build | tee "$VALHEIM_BUILD_WORK_DIR/result.txt"
+        cat "$VALHEIM_BUILD_WORK_DIR/result.txt" >> "$GITHUB_OUTPUT"
+    - name: Install .NET for assembly inspection
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+    - name: Read the Valheim game version
+      id: version
+      shell: bash
+      env:
+        PUBLISHED_BUILD_ID: ${{ steps.published.outputs.published_build_id }}
+      run: |
+        # Run this operation in an isolated shell.
+        prepare_valheim_cache() (
+            # Run this operation in an isolated shell.
+            read_valheim_version() (
+                # Read the game version from the server assembly without starting Valheim.
+                set -euo pipefail
+                : "${VALHEIM_SERVER_DIR:?VALHEIM_SERVER_DIR is required}"
+                assembly="$VALHEIM_SERVER_DIR/valheim_server_Data/Managed/assembly_valheim.dll"
+                [[ -s "$assembly" ]] || { echo "Missing Valheim assembly: $assembly" >&2; exit 1; }
+                ilspy="${ILSPYCMD:-ilspycmd}"
+                source_file="$(mktemp)"
+                trap 'rm -f -- "$source_file"' EXIT
+                "$ilspy" -t Version "$assembly" > "$source_file"
+                version="$(sed -nE 's/.*CurrentVersion.*new GameVersion\(([0-9]+),[[:space:]]*([0-9]+),[[:space:]]*([0-9]+)\).*/\1.\2.\3/p' "$source_file")"
+                [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                    echo 'Could not read a unique Valheim CurrentVersion from the server assembly.' >&2
+                    exit 1
+                }
+                printf '[Valheim] Server version: %s\n' "$version" >&2
+                printf 'valheim_version=%s\n' "$version"
+            )
+            # Read the game version and prepare verified cache metadata.
+            set -euo pipefail
+            dotnet tool install ilspycmd --tool-path "$VALHEIM_BUILD_WORK_DIR/tools" --version 10.1.0.8386
+            export ILSPYCMD="$VALHEIM_BUILD_WORK_DIR/tools/ilspycmd"
+            read_valheim_version | tee "$VALHEIM_BUILD_WORK_DIR/version.txt"
+            cat "$VALHEIM_BUILD_WORK_DIR/version.txt" >> "$GITHUB_OUTPUT"
+            version="$(awk -F= '/^valheim_version=/ { print $2 }' "$VALHEIM_BUILD_WORK_DIR/version.txt")"
+            key="valheim-server-v1-linux-x64-$VALHEIM_CHANNEL-$PUBLISHED_BUILD_ID-version-$version"
+            printf 'cache_key=%s\n' "$key" >> "$GITHUB_OUTPUT"
+            printf 'VALHEIM_VERSION=%s\nVALHEIM_BUILD_ID=%s\n' "$version" "$PUBLISHED_BUILD_ID" \
+              > "$VALHEIM_SERVER_DIR/image-metadata.env"
+        )
+
+        prepare_valheim_cache
+    - name: Remove caches without the current version name
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_PREFIX: valheim-server-v1-linux-x64-${{ env.VALHEIM_CHANNEL }}-
+        CACHE_KEEP_KEY: ${{ steps.version.outputs.cache_key }}
+      run: *id001
+    - name: Save the verified server cache
+      if: steps.cache.outputs.cache-matched-key != steps.version.outputs.cache_key
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.VALHEIM_SERVER_DIR }}
+        key: ${{ steps.version.outputs.cache_key }}
+    - name: Report the result
+      shell: bash
+      env:
+        COMPONENT: Valheim (${{ env.VALHEIM_CHANNEL }})
+        PUBLISHED_VERSION: ${{ steps.version.outputs.valheim_version }}
+        STEAM_BUILD_ID: ${{ steps.published.outputs.published_build_id }}
+        CACHE_KEY: ${{ steps.version.outputs.cache_key }}
+        RESTORED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+        RESULT_FILE: ${{ env.VALHEIM_BUILD_WORK_DIR }}/result.txt
+        COMPARISON_FILE: ${{ env.VALHEIM_BUILD_WORK_DIR }}/comparison.txt
+        GH_TOKEN: ${{ github.token }}
+        VERIFY_CACHE: '1'
+      run: *id002
+    - name: Remove temporary downloads
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${VALHEIM_BUILD_WORK_DIR:-}" &&
+              "$VALHEIM_BUILD_WORK_DIR" == "$RUNNER_TEMP"/valheim-build.* ]]; then
+          rm -rf -- "$VALHEIM_BUILD_WORK_DIR"
+        fi
+        case "$VALHEIM_SERVER_DIR" in
+          .valheim-cache/current|.valheim-cache/public-test)
+            rm -rf -- "$VALHEIM_SERVER_DIR" ;;
+        esac
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        required: true
+        type: string
+      steamcmd_cache_key:
+        required: true
+        type: string
+    outputs:
+      cache_key:
+        value: ${{ jobs.cache-valheim.outputs.cache_key }}
+      version:
+        value: ${{ jobs.cache-valheim.outputs.version }}
+      build_id:
+        value: ${{ jobs.cache-valheim.outputs.build_id }}

@@ -1,0 +1,392 @@
+name: "[Child] Cache BepInEx"
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cache-bepinex:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      cache_key: ${{ steps.cache.outputs.cache-primary-key }}
+      version: ${{ steps.published.outputs.published_version }}
+    concurrency:
+      group: valheim-bepinex-cache
+      cancel-in-progress: false
+    env:
+      TCLI_VERSION: ${{ inputs.tcli_version }}
+      TCLI_CACHE_DIR: .valheim-cache/tcli
+      BEPINEX_CACHE_DIR: .valheim-cache/bepinex
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v6
+    - name: Restore the prepared TCLI cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.TCLI_CACHE_DIR }}
+        key: ${{ inputs.tcli_cache_key }}
+        fail-on-cache-miss: true
+    - name: Prepare the TCLI runtime
+      shell: bash
+      run: |
+        # Install system tools and use TCLI from the prepared cache.
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends ca-certificates curl jq unzip
+        [[ "$TCLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+        tcli_dir="$TCLI_CACHE_DIR/tcli-$TCLI_VERSION-linux-x64"
+        [[ -s "$tcli_dir/tcli" && -s "$tcli_dir/tcli-bepinex-installer" ]] || exit 1
+        chmod +x "$tcli_dir/tcli" "$tcli_dir/tcli-bepinex-installer"
+        work_dir="$(mktemp -d "$RUNNER_TEMP/valheim-bepinex.XXXXXX")"
+        printf 'BEPINEX_WORK_DIR=%s\nTCLI=%s/%s/tcli\n' "$work_dir" "$GITHUB_WORKSPACE" "$tcli_dir" >> "$GITHUB_ENV"
+        echo '[TCLI] Prepared cache restored; distribution download skipped.'
+    - name: Query the latest BepInEx version
+      id: published
+      shell: bash
+      run: |
+        # Run this operation in an isolated shell.
+        check_bepinex_version() (
+            # Query the latest official BepInExPack Valheim package version.
+            set -euo pipefail
+            metadata="$(curl --fail --location --silent --show-error --retry 3 \
+                --connect-timeout 15 --max-time 60 \
+                https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/)"
+            version="$(jq -er '.latest.version_number' <<< "$metadata")"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                echo "Thunderstore returned an invalid package version." >&2
+                exit 1
+            }
+            printf 'published_version=%s\n' "$version"
+            printf '[BepInEx] Published package version: %s\n' "$version" >&2
+        )
+
+        set -euo pipefail
+        check_bepinex_version | tee "$BEPINEX_WORK_DIR/published.txt"
+        cat "$BEPINEX_WORK_DIR/published.txt" >> "$GITHUB_OUTPUT"
+    - name: Restore the BepInEx cache
+      id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.BEPINEX_CACHE_DIR }}
+        key: valheim-bepinex-v1-${{ steps.published.outputs.published_version }}
+        restore-keys: |
+          valheim-bepinex-v1-
+    - name: Report restored BepInEx cache
+      shell: bash
+      env:
+        COMPONENT: BepInEx (package version)
+        PUBLISHED_VERSION: ${{ steps.published.outputs.published_version }}
+        CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        RESTORED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+      run: &id001 |
+        # Run this operation in an isolated shell.
+        report_download_cache() (
+            # Report restored cache details and version comparison in logs and the job summary.
+            set -euo pipefail
+            : "${COMPONENT:-COMPONENT is required}"
+            : "${PUBLISHED_VERSION:-PUBLISHED_VERSION is required}"
+            : "${CACHE_KEY:-CACHE_KEY is required}"
+            restored_key="${RESTORED_CACHE_KEY:-}"
+            cache_state='not found'
+            if [[ "$restored_key" == "$CACHE_KEY" ]]; then
+                cache_state='exact version restored'
+            elif [[ -n "$restored_key" ]]; then
+                cache_state='fallback cache restored'
+            fi
+            printf '[%s] Published version: %s\n' "$COMPONENT" "$PUBLISHED_VERSION"
+            if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                printf '[%s] Steam Build ID: %s\n' "$COMPONENT" "$STEAM_BUILD_ID"
+            fi
+            printf '[%s] Cache: %s\n' "$COMPONENT" "$cache_state"
+            printf '[%s] Requested cache key: %s\n' "$COMPONENT" "$CACHE_KEY"
+            printf '[%s] Restored cache key: %s\n' "$COMPONENT" "${restored_key:-none}"
+            if [[ -z "${RESULT_FILE:-}" ]]; then
+                exit 0
+            fi
+            cached_version="$(awk -F= '/^cached_(build_id|version)=/ { print $2 }' "$COMPARISON_FILE")"
+            status="$(awk -F= '/^status=/ { print $2 }' "$RESULT_FILE")"
+            case "$status" in
+                up-to-date) outcome='UP TO DATE — download skipped; current version already cached' ;;
+                downloaded) outcome='UPDATED — download verified; current version saved in cache' ;;
+                *) echo "Unexpected cache result: $status" >&2; exit 1 ;;
+            esac
+            if [[ "${VERIFY_CACHE:-0}" == 1 ]]; then
+                if ! gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_KEY" --limit 100 --json key |
+                    jq -e --arg key "$CACHE_KEY" 'any(.[]; .key == $key)' >/dev/null; then
+                    printf '[%s] CACHE MISSING: expected version %s under key %s.\n' \
+                        "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY" >&2
+                    exit 1
+                fi
+                printf '[%s] Confirmed in GitHub Actions cache: version %s; key %s\n' \
+                    "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY"
+            fi
+            printf '[%s] Previously cached version: %s\n' "$COMPONENT" "$cached_version"
+            printf '[%s] %s: %s\n' "$COMPONENT" "$PUBLISHED_VERSION" "$outcome"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                {
+                    printf '### %s\n\n' "$COMPONENT"
+                    printf '| Item | Result |\n| --- | --- |\n'
+                    printf '| Published version | %s |\n| Previously cached version | %s |\n' "$PUBLISHED_VERSION" "$cached_version"
+                    printf '| Cache restored | %s |\n| Result | %s |\n' "$cache_state" "$outcome"
+                    if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                        printf '| Valheim version | %s |\n| Steam Build ID | %s |\n' "$PUBLISHED_VERSION" "$STEAM_BUILD_ID"
+                    fi
+                    printf '| Current cache key | `%s` |\n' "$CACHE_KEY"
+                } >> "$GITHUB_STEP_SUMMARY"
+            fi
+        )
+
+        report_download_cache
+    - name: Compare cached and published versions
+      id: comparison
+      shell: bash
+      env:
+        PUBLISHED_VERSION: ${{ steps.published.outputs.published_version }}
+        CACHE_CHECK_ONLY: '1'
+      run: |
+        # Run this operation in an isolated shell.
+        cache_bepinex_build() (
+            # Download and extract BepInEx with TCLI when the cached package differs.
+            set -euo pipefail
+            : "${TCLI:?TCLI is required}"
+            : "${BEPINEX_CACHE_DIR:?BEPINEX_CACHE_DIR is required}"
+            : "${PUBLISHED_VERSION:?PUBLISHED_VERSION is required}"
+            [[ "$PUBLISHED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            package_dir="$BEPINEX_CACHE_DIR/package"
+            cached_version=none
+            if [[ -f "$package_dir/manifest.json" ]]; then
+                cached_version="$(jq -er '.version_number' "$package_dir/manifest.json")"
+            fi
+            printf 'cached_version=%s\npublished_version=%s\n' "$cached_version" "$PUBLISHED_VERSION"
+            printf '[BepInEx] Cached package version: %s; published version: %s\n' \
+                "$cached_version" "$PUBLISHED_VERSION" >&2
+            if [[ "$cached_version" == "$PUBLISHED_VERSION" ]]; then
+                test -s "$package_dir/BepInExPack_Valheim/BepInEx/core/BepInEx.Preloader.dll"
+                printf '[BepInEx] UP TO DATE: version %s is cached. Download skipped.\n' "$cached_version" >&2
+                echo 'status=up-to-date'
+                exit 0
+            fi
+            if [[ "${CACHE_CHECK_ONLY:-0}" == 1 ]]; then
+                printf '[BepInEx] DOWNLOAD REQUIRED: cached version %s differs from published version %s.\n' \
+                    "$cached_version" "$PUBLISHED_VERSION" >&2
+                echo 'status=update-available'
+                exit 0
+            fi
+
+            temporary_dir="$(mktemp -d)"
+            trap 'rm -rf -- "$temporary_dir"' EXIT
+            temporary_dir="$(CDPATH='' cd -- "$temporary_dir" && pwd)"
+            mkdir -p "$temporary_dir/game" "$temporary_dir/config"
+            touch "$temporary_dir/game/valheim_server.x86_64"
+            printf '[BepInEx] Downloading version %s with TCLI...\n' "$PUBLISHED_VERSION" >&2
+            # Import an isolated staging directory; TCLI installs files without running Valheim.
+            "$TCLI" import-game valheim --exepath "$temporary_dir/game/valheim_server.x86_64" \
+                --tcli-directory "$temporary_dir/config" >&2
+            "$TCLI" install valheim "denikson-BepInExPack_Valheim-$PUBLISHED_VERSION" \
+                --tcli-directory "$temporary_dir/config" >&2
+            archive="$temporary_dir/config/ModCache/denikson-BepInExPack_Valheim-$PUBLISHED_VERSION.zip"
+            mkdir -p -- "$package_dir"
+            printf '[BepInEx] Extracting package version %s...\n' "$PUBLISHED_VERSION" >&2
+            unzip -q "$archive" -d "$package_dir"
+            jq -e --arg version "$PUBLISHED_VERSION" \
+                '.name == "BepInExPack_Valheim" and .version_number == $version' \
+                "$package_dir/manifest.json" >/dev/null
+            test -s "$package_dir/BepInExPack_Valheim/BepInEx/core/BepInEx.Preloader.dll"
+            printf '[BepInEx] Download complete: version %s extracted and verified. Ready to save in cache.\n' \
+                "$PUBLISHED_VERSION" >&2
+            echo 'status=downloaded'
+        )
+
+        set -euo pipefail
+        cache_bepinex_build | tee "$BEPINEX_WORK_DIR/comparison.txt"
+        cat "$BEPINEX_WORK_DIR/comparison.txt" >> "$GITHUB_OUTPUT"
+
+        cp "$BEPINEX_WORK_DIR/comparison.txt" "$BEPINEX_WORK_DIR/result.txt"
+    - name: Remove obsolete BepInEx caches
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_PREFIX: valheim-bepinex-v1-
+        CACHE_KEEP_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+      run: |
+        # Run this operation in an isolated shell.
+        prune_workflow_cache() (
+            # Delete obsolete GitHub Actions caches for one downloaded component.
+            set -euo pipefail
+            : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+            : "${CACHE_PREFIX:?CACHE_PREFIX is required}"
+            : "${CACHE_KEEP_KEY:?CACHE_KEEP_KEY is required}"
+            case "$CACHE_PREFIX" in
+                valheim-server-v1-linux-x64-current-|valheim-server-v1-linux-x64-public-test-|valheim-bepinex-v1-|steamcmd-v1-linux-x64-|tcli-v1-linux-x64-) ;;
+                *) echo "Unsupported workflow cache prefix." >&2; exit 1 ;;
+            esac
+            [[ "$CACHE_KEEP_KEY" == "$CACHE_PREFIX"* ]] || exit 1
+            obsolete_ids="$(gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_PREFIX" \
+                --limit 10000 --json id,key |
+                jq -r --arg keep "$CACHE_KEEP_KEY" '.[] | select(.key != $keep) | .id')"
+            if [[ -z "$obsolete_ids" ]]; then
+                printf '[Cache] No obsolete caches to delete. Keeping: %s\n' "$CACHE_KEEP_KEY"
+            fi
+            while IFS= read -r cache_id; do
+                [[ -n "$cache_id" ]] || continue
+                [[ "$cache_id" =~ ^[0-9]+$ ]] || exit 1
+                printf '[Cache] Deleting obsolete cache ID %s before downloading a new version.\n' "$cache_id"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+            done <<< "$obsolete_ids"
+        )
+
+        prune_workflow_cache
+    - name: Download and extract the new BepInEx package
+      id: download
+      if: steps.comparison.outputs.status == 'update-available'
+      shell: bash
+      env:
+        PUBLISHED_VERSION: ${{ steps.published.outputs.published_version }}
+      run: |
+        # Run this operation in an isolated shell.
+        reset_download_cache() (
+            # Remove old files only from a known workspace download cache directory.
+            set -euo pipefail
+            cache_path="${1:?Cache path is required}"
+            case "$cache_path" in
+                .valheim-cache/current|.valheim-cache/public-test|.valheim-cache/bepinex) ;;
+                *) echo "Unsupported download cache directory." >&2; exit 1 ;;
+            esac
+            workspace="$(pwd -P)"
+            if [[ -L .valheim-cache || -L "$cache_path" ]]; then
+                echo "Download cache directories must not be symlinks." >&2
+                exit 1
+            fi
+            if [[ -d "$cache_path" ]]; then
+                resolved_path="$(CDPATH='' cd -- "$cache_path" && pwd -P)"
+                [[ "$resolved_path" == "$workspace/$cache_path" ]] || {
+                    echo "Download cache resolves outside its expected workspace path." >&2
+                    exit 1
+                }
+                rm -rf -- "$resolved_path"
+            fi
+            mkdir -p -- "$cache_path"
+        )
+
+        # Run this operation in an isolated shell.
+        cache_bepinex_build() (
+            # Download and extract BepInEx with TCLI when the cached package differs.
+            set -euo pipefail
+            : "${TCLI:?TCLI is required}"
+            : "${BEPINEX_CACHE_DIR:?BEPINEX_CACHE_DIR is required}"
+            : "${PUBLISHED_VERSION:?PUBLISHED_VERSION is required}"
+            [[ "$PUBLISHED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            package_dir="$BEPINEX_CACHE_DIR/package"
+            cached_version=none
+            if [[ -f "$package_dir/manifest.json" ]]; then
+                cached_version="$(jq -er '.version_number' "$package_dir/manifest.json")"
+            fi
+            printf 'cached_version=%s\npublished_version=%s\n' "$cached_version" "$PUBLISHED_VERSION"
+            printf '[BepInEx] Cached package version: %s; published version: %s\n' \
+                "$cached_version" "$PUBLISHED_VERSION" >&2
+            if [[ "$cached_version" == "$PUBLISHED_VERSION" ]]; then
+                test -s "$package_dir/BepInExPack_Valheim/BepInEx/core/BepInEx.Preloader.dll"
+                printf '[BepInEx] UP TO DATE: version %s is cached. Download skipped.\n' "$cached_version" >&2
+                echo 'status=up-to-date'
+                exit 0
+            fi
+            if [[ "${CACHE_CHECK_ONLY:-0}" == 1 ]]; then
+                printf '[BepInEx] DOWNLOAD REQUIRED: cached version %s differs from published version %s.\n' \
+                    "$cached_version" "$PUBLISHED_VERSION" >&2
+                echo 'status=update-available'
+                exit 0
+            fi
+
+            temporary_dir="$(mktemp -d)"
+            trap 'rm -rf -- "$temporary_dir"' EXIT
+            temporary_dir="$(CDPATH='' cd -- "$temporary_dir" && pwd)"
+            mkdir -p "$temporary_dir/game" "$temporary_dir/config"
+            touch "$temporary_dir/game/valheim_server.x86_64"
+            printf '[BepInEx] Downloading version %s with TCLI...\n' "$PUBLISHED_VERSION" >&2
+            # Import an isolated staging directory; TCLI installs files without running Valheim.
+            "$TCLI" import-game valheim --exepath "$temporary_dir/game/valheim_server.x86_64" \
+                --tcli-directory "$temporary_dir/config" >&2
+            "$TCLI" install valheim "denikson-BepInExPack_Valheim-$PUBLISHED_VERSION" \
+                --tcli-directory "$temporary_dir/config" >&2
+            archive="$temporary_dir/config/ModCache/denikson-BepInExPack_Valheim-$PUBLISHED_VERSION.zip"
+            mkdir -p -- "$package_dir"
+            printf '[BepInEx] Extracting package version %s...\n' "$PUBLISHED_VERSION" >&2
+            unzip -q "$archive" -d "$package_dir"
+            jq -e --arg version "$PUBLISHED_VERSION" \
+                '.name == "BepInExPack_Valheim" and .version_number == $version' \
+                "$package_dir/manifest.json" >/dev/null
+            test -s "$package_dir/BepInExPack_Valheim/BepInEx/core/BepInEx.Preloader.dll"
+            printf '[BepInEx] Download complete: version %s extracted and verified. Ready to save in cache.\n' \
+                "$PUBLISHED_VERSION" >&2
+            echo 'status=downloaded'
+        )
+
+        set -euo pipefail
+        reset_download_cache "$BEPINEX_CACHE_DIR"
+        cache_bepinex_build | tee "$BEPINEX_WORK_DIR/result.txt"
+        cat "$BEPINEX_WORK_DIR/result.txt" >> "$GITHUB_OUTPUT"
+    - name: Save the verified BepInEx cache
+      if: steps.download.outputs.status == 'downloaded'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.BEPINEX_CACHE_DIR }}
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+    - name: Report the BepInEx result
+      shell: bash
+      env:
+        COMPONENT: BepInEx (package version)
+        PUBLISHED_VERSION: ${{ steps.published.outputs.published_version }}
+        CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        RESTORED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+        RESULT_FILE: ${{ env.BEPINEX_WORK_DIR }}/result.txt
+        COMPARISON_FILE: ${{ env.BEPINEX_WORK_DIR }}/comparison.txt
+        GH_TOKEN: ${{ github.token }}
+        VERIFY_CACHE: '1'
+      run: *id001
+    - name: Remove temporary BepInEx files
+      if: always()
+      shell: bash
+      run: |
+        # Run this operation in an isolated shell.
+        reset_download_cache() (
+            # Remove old files only from a known workspace download cache directory.
+            set -euo pipefail
+            cache_path="${1:?Cache path is required}"
+            case "$cache_path" in
+                .valheim-cache/current|.valheim-cache/public-test|.valheim-cache/bepinex) ;;
+                *) echo "Unsupported download cache directory." >&2; exit 1 ;;
+            esac
+            workspace="$(pwd -P)"
+            if [[ -L .valheim-cache || -L "$cache_path" ]]; then
+                echo "Download cache directories must not be symlinks." >&2
+                exit 1
+            fi
+            if [[ -d "$cache_path" ]]; then
+                resolved_path="$(CDPATH='' cd -- "$cache_path" && pwd -P)"
+                [[ "$resolved_path" == "$workspace/$cache_path" ]] || {
+                    echo "Download cache resolves outside its expected workspace path." >&2
+                    exit 1
+                }
+                rm -rf -- "$resolved_path"
+            fi
+            mkdir -p -- "$cache_path"
+        )
+
+        set -euo pipefail
+        if [[ -n "${BEPINEX_WORK_DIR:-}" && "$BEPINEX_WORK_DIR" == "$RUNNER_TEMP"/valheim-bepinex.* ]]; then
+          rm -rf -- "$BEPINEX_WORK_DIR"
+        fi
+        reset_download_cache "$BEPINEX_CACHE_DIR"
+'on':
+  workflow_call:
+    outputs:
+      cache_key:
+        value: ${{ jobs.cache-bepinex.outputs.cache_key }}
+      version:
+        value: ${{ jobs.cache-bepinex.outputs.version }}
+    inputs:
+      tcli_cache_key:
+        required: true
+        type: string
+      tcli_version:
+        required: true
+        type: string

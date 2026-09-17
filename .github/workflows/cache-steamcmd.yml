@@ -1,0 +1,221 @@
+name: "[Child] Cache SteamCMD"
+'on':
+  workflow_call:
+    outputs:
+      cache_key:
+        value: ${{ jobs.cache-steamcmd.outputs.cache_key }}
+      version:
+        value: ${{ jobs.cache-steamcmd.outputs.version }}
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cache-steamcmd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: valheim-steamcmd-cache
+      cancel-in-progress: false
+    env:
+      STEAMCMD_CACHE_DIR: .valheim-cache/steamcmd
+    outputs:
+      cache_key: ${{ steps.steamcmd-version.outputs.cache_key }}
+      version: ${{ steps.steamcmd-version.outputs.version }}
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v6
+    - name: Restore the SteamCMD cache
+      id: steamcmd-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.STEAMCMD_CACHE_DIR }}
+        key: steamcmd-v1-linux-x64-latest
+        restore-keys: |
+          steamcmd-v1-linux-x64-
+    - name: Install SteamCMD
+      shell: bash
+      run: |
+        # Run this operation in an isolated shell.
+        install_cached_steamcmd() (
+            # Restore or bootstrap SteamCMD and install its system runtime.
+            # Install SteamCMD and its 32-bit runtime on a Debian or Ubuntu runner.
+            set -euo pipefail
+            command -v apt-get >/dev/null || {
+              echo 'SteamCMD setup requires a Debian or Ubuntu runner.' >&2
+              exit 1
+            }
+            package_command=(apt-get)
+            if [[ "$(id -u)" != 0 ]]; then
+              package_command=(sudo -n apt-get)
+            fi
+            "${package_command[@]}" update
+            "${package_command[@]}" install -y --no-install-recommends \
+              ca-certificates curl jq libc6-i386 lib32gcc-s1 lib32stdc++6
+            work_dir="$(mktemp -d "$RUNNER_TEMP/valheim-build.XXXXXX")"
+            printf 'VALHEIM_BUILD_WORK_DIR=%s\n' "$work_dir" >> "$GITHUB_ENV"
+            mkdir -p "$STEAMCMD_CACHE_DIR"
+            if [[ -s "$STEAMCMD_CACHE_DIR/steamcmd.sh" ]]; then
+              echo '[SteamCMD] Cache restored; bootstrap download skipped. SteamCMD checks its own updates.'
+            else
+              echo '[SteamCMD] Cache missing; downloading the official bootstrap.'
+              curl --fail --location --show-error --silent --retry 3 \
+                https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+                --output "$work_dir/steamcmd.tar.gz"
+              tar -xzf "$work_dir/steamcmd.tar.gz" -C "$STEAMCMD_CACHE_DIR"
+            fi
+            printf 'STEAMCMD=%s/%s/steamcmd.sh\n' "$GITHUB_WORKSPACE" "$STEAMCMD_CACHE_DIR" >> "$GITHUB_ENV"
+        )
+
+        install_cached_steamcmd
+    - name: Update and read the SteamCMD client version
+      id: client
+      shell: bash
+      run: |
+        # SteamCMD updates itself before printing the client version.
+        set -euo pipefail
+        timeout 180 "$STEAMCMD" +quit > "$VALHEIM_BUILD_WORK_DIR/client.log" 2>&1 || {
+            cat "$VALHEIM_BUILD_WORK_DIR/client.log" >&2; exit 1;
+        }
+        version="$(sed -nE 's/.*Steam Console Client.*version ([0-9]+).*/\1/p' "$VALHEIM_BUILD_WORK_DIR/client.log" | sort -u)"
+        [[ "$version" =~ ^[0-9]+$ ]] || exit 1
+        printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+    - name: Read the updated SteamCMD version
+      id: steamcmd-version
+      shell: bash
+      env:
+        RESTORED_CACHE_KEY: ${{ steps.steamcmd-cache.outputs.cache-matched-key }}
+        PUBLISHED_STEAMCMD_VERSION: ${{ steps.client.outputs.version }}
+      run: |
+        # Run this operation in an isolated shell.
+        prepare_steamcmd_cache() (
+            # Read the updated SteamCMD client version and prepare its cache result.
+            set -euo pipefail
+            : "${PUBLISHED_STEAMCMD_VERSION:?PUBLISHED_STEAMCMD_VERSION is required}"
+            : "${VALHEIM_BUILD_WORK_DIR:?VALHEIM_BUILD_WORK_DIR is required}"
+            : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+            version="$PUBLISHED_STEAMCMD_VERSION"
+            [[ "$version" =~ ^[0-9]+$ ]] || { echo 'Invalid SteamCMD client version.' >&2; exit 1; }
+            key="steamcmd-v1-linux-x64-$version"
+            status=downloaded
+            if [[ "${RESTORED_CACHE_KEY:-}" == "$key" ]]; then
+                status=up-to-date
+            fi
+            restored_key="${RESTORED_CACHE_KEY:-}"
+            cached_version="${restored_key##steamcmd-v1-linux-x64-}"
+            printf 'cached_version=%s\nstatus=%s\n' "${cached_version:-none}" "$status" \
+                > "$VALHEIM_BUILD_WORK_DIR/steamcmd-result.txt"
+            printf 'version=%s\ncache_key=%s\n' "$version" "$key" >> "$GITHUB_OUTPUT"
+            printf '[SteamCMD] Client version: %s; cache result: %s\n' "$version" "$status"
+        )
+
+        prepare_steamcmd_cache
+    - name: Remove obsolete SteamCMD caches
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_PREFIX: steamcmd-v1-linux-x64-
+        CACHE_KEEP_KEY: ${{ steps.steamcmd-version.outputs.cache_key }}
+      run: |
+        # Run this operation in an isolated shell.
+        prune_workflow_cache() (
+            # Delete obsolete GitHub Actions caches for one downloaded component.
+            set -euo pipefail
+            : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+            : "${CACHE_PREFIX:?CACHE_PREFIX is required}"
+            : "${CACHE_KEEP_KEY:?CACHE_KEEP_KEY is required}"
+            case "$CACHE_PREFIX" in
+                valheim-server-v1-linux-x64-current-|valheim-server-v1-linux-x64-public-test-|valheim-bepinex-v1-|steamcmd-v1-linux-x64-|tcli-v1-linux-x64-) ;;
+                *) echo "Unsupported workflow cache prefix." >&2; exit 1 ;;
+            esac
+            [[ "$CACHE_KEEP_KEY" == "$CACHE_PREFIX"* ]] || exit 1
+            obsolete_ids="$(gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_PREFIX" \
+                --limit 10000 --json id,key |
+                jq -r --arg keep "$CACHE_KEEP_KEY" '.[] | select(.key != $keep) | .id')"
+            if [[ -z "$obsolete_ids" ]]; then
+                printf '[Cache] No obsolete caches to delete. Keeping: %s\n' "$CACHE_KEEP_KEY"
+            fi
+            while IFS= read -r cache_id; do
+                [[ -n "$cache_id" ]] || continue
+                [[ "$cache_id" =~ ^[0-9]+$ ]] || exit 1
+                printf '[Cache] Deleting obsolete cache ID %s before downloading a new version.\n' "$cache_id"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+            done <<< "$obsolete_ids"
+        )
+
+        prune_workflow_cache
+    - name: Save the verified SteamCMD cache
+      if: steps.steamcmd-cache.outputs.cache-matched-key != steps.steamcmd-version.outputs.cache_key
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.STEAMCMD_CACHE_DIR }}
+        key: ${{ steps.steamcmd-version.outputs.cache_key }}
+    - name: Report the SteamCMD cache
+      shell: bash
+      env:
+        COMPONENT: SteamCMD
+        PUBLISHED_VERSION: ${{ steps.steamcmd-version.outputs.version }}
+        CACHE_KEY: ${{ steps.steamcmd-version.outputs.cache_key }}
+        RESTORED_CACHE_KEY: ${{ steps.steamcmd-cache.outputs.cache-matched-key }}
+        RESULT_FILE: ${{ env.VALHEIM_BUILD_WORK_DIR }}/steamcmd-result.txt
+        COMPARISON_FILE: ${{ env.VALHEIM_BUILD_WORK_DIR }}/steamcmd-result.txt
+        GH_TOKEN: ${{ github.token }}
+        VERIFY_CACHE: '1'
+      run: |
+        # Run this operation in an isolated shell.
+        report_download_cache() (
+            # Report restored cache details and version comparison in logs and the job summary.
+            set -euo pipefail
+            : "${COMPONENT:-COMPONENT is required}"
+            : "${PUBLISHED_VERSION:-PUBLISHED_VERSION is required}"
+            : "${CACHE_KEY:-CACHE_KEY is required}"
+            restored_key="${RESTORED_CACHE_KEY:-}"
+            cache_state='not found'
+            if [[ "$restored_key" == "$CACHE_KEY" ]]; then
+                cache_state='exact version restored'
+            elif [[ -n "$restored_key" ]]; then
+                cache_state='fallback cache restored'
+            fi
+            printf '[%s] Published version: %s\n' "$COMPONENT" "$PUBLISHED_VERSION"
+            if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                printf '[%s] Steam Build ID: %s\n' "$COMPONENT" "$STEAM_BUILD_ID"
+            fi
+            printf '[%s] Cache: %s\n' "$COMPONENT" "$cache_state"
+            printf '[%s] Requested cache key: %s\n' "$COMPONENT" "$CACHE_KEY"
+            printf '[%s] Restored cache key: %s\n' "$COMPONENT" "${restored_key:-none}"
+            if [[ -z "${RESULT_FILE:-}" ]]; then
+                exit 0
+            fi
+            cached_version="$(awk -F= '/^cached_(build_id|version)=/ { print $2 }' "$COMPARISON_FILE")"
+            status="$(awk -F= '/^status=/ { print $2 }' "$RESULT_FILE")"
+            case "$status" in
+                up-to-date) outcome='UP TO DATE — download skipped; current version already cached' ;;
+                downloaded) outcome='UPDATED — download verified; current version saved in cache' ;;
+                *) echo "Unexpected cache result: $status" >&2; exit 1 ;;
+            esac
+            if [[ "${VERIFY_CACHE:-0}" == 1 ]]; then
+                if ! gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_KEY" --limit 100 --json key |
+                    jq -e --arg key "$CACHE_KEY" 'any(.[]; .key == $key)' >/dev/null; then
+                    printf '[%s] CACHE MISSING: expected version %s under key %s.\n' \
+                        "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY" >&2
+                    exit 1
+                fi
+                printf '[%s] Confirmed in GitHub Actions cache: version %s; key %s\n' \
+                    "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY"
+            fi
+            printf '[%s] Previously cached version: %s\n' "$COMPONENT" "$cached_version"
+            printf '[%s] %s: %s\n' "$COMPONENT" "$PUBLISHED_VERSION" "$outcome"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                {
+                    printf '### %s\n\n' "$COMPONENT"
+                    printf '| Item | Result |\n| --- | --- |\n'
+                    printf '| Published version | %s |\n| Previously cached version | %s |\n' "$PUBLISHED_VERSION" "$cached_version"
+                    printf '| Cache restored | %s |\n| Result | %s |\n' "$cache_state" "$outcome"
+                    if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                        printf '| Valheim version | %s |\n| Steam Build ID | %s |\n' "$PUBLISHED_VERSION" "$STEAM_BUILD_ID"
+                    fi
+                    printf '| Current cache key | `%s` |\n' "$CACHE_KEY"
+                } >> "$GITHUB_STEP_SUMMARY"
+            fi
+        )
+
+        report_download_cache

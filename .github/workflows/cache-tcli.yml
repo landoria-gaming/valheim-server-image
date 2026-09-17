@@ -1,0 +1,192 @@
+name: "[Child] Cache TCLI"
+'on':
+  workflow_call:
+    outputs:
+      cache_key:
+        value: ${{ jobs.cache-tcli.outputs.cache_key }}
+      version:
+        value: ${{ jobs.cache-tcli.outputs.version }}
+permissions:
+  contents: read
+  actions: write
+jobs:
+  cache-tcli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: valheim-tcli-cache
+      cancel-in-progress: false
+    env:
+      TCLI_VERSION: 0.2.4
+      TCLI_CACHE_DIR: .valheim-cache/tcli
+    outputs:
+      cache_key: ${{ steps.tcli-cache.outputs.cache-primary-key }}
+      version: ${{ env.TCLI_VERSION }}
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v6
+    - name: Restore the TCLI cache
+      id: tcli-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.TCLI_CACHE_DIR }}
+        key: tcli-v1-linux-x64-${{ env.TCLI_VERSION }}
+    - name: Remove obsolete TCLI caches
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_PREFIX: tcli-v1-linux-x64-
+        CACHE_KEEP_KEY: tcli-v1-linux-x64-${{ env.TCLI_VERSION }}
+      run: |
+        # Run this operation in an isolated shell.
+        prune_workflow_cache() (
+            # Delete obsolete GitHub Actions caches for one downloaded component.
+            set -euo pipefail
+            : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+            : "${CACHE_PREFIX:?CACHE_PREFIX is required}"
+            : "${CACHE_KEEP_KEY:?CACHE_KEEP_KEY is required}"
+            case "$CACHE_PREFIX" in
+                valheim-server-v1-linux-x64-current-|valheim-server-v1-linux-x64-public-test-|valheim-bepinex-v1-|steamcmd-v1-linux-x64-|tcli-v1-linux-x64-) ;;
+                *) echo "Unsupported workflow cache prefix." >&2; exit 1 ;;
+            esac
+            [[ "$CACHE_KEEP_KEY" == "$CACHE_PREFIX"* ]] || exit 1
+            obsolete_ids="$(gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_PREFIX" \
+                --limit 10000 --json id,key |
+                jq -r --arg keep "$CACHE_KEEP_KEY" '.[] | select(.key != $keep) | .id')"
+            if [[ -z "$obsolete_ids" ]]; then
+                printf '[Cache] No obsolete caches to delete. Keeping: %s\n' "$CACHE_KEEP_KEY"
+            fi
+            while IFS= read -r cache_id; do
+                [[ -n "$cache_id" ]] || continue
+                [[ "$cache_id" =~ ^[0-9]+$ ]] || exit 1
+                printf '[Cache] Deleting obsolete cache ID %s before downloading a new version.\n' "$cache_id"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+            done <<< "$obsolete_ids"
+        )
+
+        prune_workflow_cache
+    - name: Install Thunderstore CLI
+      id: tcli-install
+      shell: bash
+      env:
+        RESTORED_CACHE_KEY: ${{ steps.tcli-cache.outputs.cache-matched-key }}
+      run: |
+        # Run this operation in an isolated shell.
+        install_cached_tcli() (
+            # Install the pinned TCLI distribution only when its verified cache is missing.
+            set -euo pipefail
+            : "${TCLI_VERSION:?TCLI_VERSION is required}"
+            : "${TCLI_CACHE_DIR:?TCLI_CACHE_DIR is required}"
+            : "${GITHUB_ENV:?GITHUB_ENV is required}"
+            [[ "$TCLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            [[ "$TCLI_CACHE_DIR" == .valheim-cache/tcli && ! -L "$TCLI_CACHE_DIR" ]] || exit 1
+            package_command=(apt-get)
+            if [[ "$(id -u)" != 0 ]]; then
+                package_command=(sudo -n apt-get)
+            fi
+            "${package_command[@]}" update
+            "${package_command[@]}" install -y --no-install-recommends ca-certificates curl jq unzip
+            work_dir="$(mktemp -d "$RUNNER_TEMP/valheim-bepinex.XXXXXX")"
+            printf 'BEPINEX_WORK_DIR=%s\n' "$work_dir" >> "$GITHUB_ENV"
+            key="tcli-v1-linux-x64-$TCLI_VERSION"
+            tcli_dir="$TCLI_CACHE_DIR/tcli-$TCLI_VERSION-linux-x64"
+            status=up-to-date
+            if [[ "${RESTORED_CACHE_KEY:-}" != "$key" ]]; then
+                echo "[TCLI] Cache missing; downloading version $TCLI_VERSION."
+                rm -rf -- "$TCLI_CACHE_DIR"
+                mkdir -p "$TCLI_CACHE_DIR"
+                curl --fail --location --silent --show-error --retry 3 \
+                    "https://github.com/thunderstore-io/thunderstore-cli/releases/download/$TCLI_VERSION/tcli-$TCLI_VERSION-linux-x64.tar.gz" \
+                    --output "$work_dir/tcli.tar.gz"
+                tar -xzf "$work_dir/tcli.tar.gz" -C "$TCLI_CACHE_DIR"
+                status=downloaded
+            else
+                echo "[TCLI] Cache restored: version $TCLI_VERSION; download skipped."
+            fi
+            [[ -s "$tcli_dir/tcli" && -s "$tcli_dir/tcli-bepinex-installer" ]] || {
+                echo '[TCLI] Distribution is incomplete; refusing to use or save it.' >&2; exit 1;
+            }
+            chmod +x "$tcli_dir/tcli" "$tcli_dir/tcli-bepinex-installer"
+            printf 'TCLI=%s/%s/tcli\n' "$GITHUB_WORKSPACE" "$tcli_dir" >> "$GITHUB_ENV"
+            cached_version=none
+            if [[ "$status" == up-to-date ]]; then cached_version="$TCLI_VERSION"; fi
+            printf 'cached_version=%s\nstatus=%s\n' "$cached_version" "$status" > "$work_dir/tcli-result.txt"
+        )
+
+        install_cached_tcli
+    - name: Save the verified TCLI cache
+      if: steps.tcli-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.TCLI_CACHE_DIR }}
+        key: tcli-v1-linux-x64-${{ env.TCLI_VERSION }}
+    - name: Report the TCLI cache
+      shell: bash
+      env:
+        COMPONENT: TCLI
+        PUBLISHED_VERSION: ${{ env.TCLI_VERSION }}
+        CACHE_KEY: tcli-v1-linux-x64-${{ env.TCLI_VERSION }}
+        RESTORED_CACHE_KEY: ${{ steps.tcli-cache.outputs.cache-matched-key }}
+        RESULT_FILE: ${{ env.BEPINEX_WORK_DIR }}/tcli-result.txt
+        COMPARISON_FILE: ${{ env.BEPINEX_WORK_DIR }}/tcli-result.txt
+        GH_TOKEN: ${{ github.token }}
+        VERIFY_CACHE: '1'
+      run: |
+        # Run this operation in an isolated shell.
+        report_download_cache() (
+            # Report restored cache details and version comparison in logs and the job summary.
+            set -euo pipefail
+            : "${COMPONENT:-COMPONENT is required}"
+            : "${PUBLISHED_VERSION:-PUBLISHED_VERSION is required}"
+            : "${CACHE_KEY:-CACHE_KEY is required}"
+            restored_key="${RESTORED_CACHE_KEY:-}"
+            cache_state='not found'
+            if [[ "$restored_key" == "$CACHE_KEY" ]]; then
+                cache_state='exact version restored'
+            elif [[ -n "$restored_key" ]]; then
+                cache_state='fallback cache restored'
+            fi
+            printf '[%s] Published version: %s\n' "$COMPONENT" "$PUBLISHED_VERSION"
+            if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                printf '[%s] Steam Build ID: %s\n' "$COMPONENT" "$STEAM_BUILD_ID"
+            fi
+            printf '[%s] Cache: %s\n' "$COMPONENT" "$cache_state"
+            printf '[%s] Requested cache key: %s\n' "$COMPONENT" "$CACHE_KEY"
+            printf '[%s] Restored cache key: %s\n' "$COMPONENT" "${restored_key:-none}"
+            if [[ -z "${RESULT_FILE:-}" ]]; then
+                exit 0
+            fi
+            cached_version="$(awk -F= '/^cached_(build_id|version)=/ { print $2 }' "$COMPARISON_FILE")"
+            status="$(awk -F= '/^status=/ { print $2 }' "$RESULT_FILE")"
+            case "$status" in
+                up-to-date) outcome='UP TO DATE — download skipped; current version already cached' ;;
+                downloaded) outcome='UPDATED — download verified; current version saved in cache' ;;
+                *) echo "Unexpected cache result: $status" >&2; exit 1 ;;
+            esac
+            if [[ "${VERIFY_CACHE:-0}" == 1 ]]; then
+                if ! gh cache list --repo "$GITHUB_REPOSITORY" --key "$CACHE_KEY" --limit 100 --json key |
+                    jq -e --arg key "$CACHE_KEY" 'any(.[]; .key == $key)' >/dev/null; then
+                    printf '[%s] CACHE MISSING: expected version %s under key %s.\n' \
+                        "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY" >&2
+                    exit 1
+                fi
+                printf '[%s] Confirmed in GitHub Actions cache: version %s; key %s\n' \
+                    "$COMPONENT" "$PUBLISHED_VERSION" "$CACHE_KEY"
+            fi
+            printf '[%s] Previously cached version: %s\n' "$COMPONENT" "$cached_version"
+            printf '[%s] %s: %s\n' "$COMPONENT" "$PUBLISHED_VERSION" "$outcome"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+                {
+                    printf '### %s\n\n' "$COMPONENT"
+                    printf '| Item | Result |\n| --- | --- |\n'
+                    printf '| Published version | %s |\n| Previously cached version | %s |\n' "$PUBLISHED_VERSION" "$cached_version"
+                    printf '| Cache restored | %s |\n| Result | %s |\n' "$cache_state" "$outcome"
+                    if [[ -n "${STEAM_BUILD_ID:-}" ]]; then
+                        printf '| Valheim version | %s |\n| Steam Build ID | %s |\n' "$PUBLISHED_VERSION" "$STEAM_BUILD_ID"
+                    fi
+                    printf '| Current cache key | `%s` |\n' "$CACHE_KEY"
+                } >> "$GITHUB_STEP_SUMMARY"
+            fi
+        )
+
+        report_download_cache
