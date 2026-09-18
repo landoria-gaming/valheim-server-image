@@ -2,15 +2,50 @@ name: Build and publish Valheim server image
 permissions:
   contents: read
 concurrency:
-  group: valheim-build-cache-${{ inputs.channel || 'current' }}
+  group: valheim-build-cache
   cancel-in-progress: false
 jobs:
+  prepare-caches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+    - name: Discard existing download caches
+      if: inputs['discard-cache'] == true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VALHEIM_CHANNEL: ${{ inputs.channel || 'current' }}
+      run: |
+        # Remove component caches before any download jobs start.
+        set -euo pipefail
+        case "$VALHEIM_CHANNEL" in
+          current|public-test) ;;
+          *) echo 'Invalid Valheim channel.' >&2; exit 1 ;;
+        esac
+        endpoint="repos/$GITHUB_REPOSITORY/actions/caches"
+        caches="$(gh api "$endpoint?per_page=100" --paginate --slurp)"
+        cache_ids="$(jq -r --arg channel "$VALHEIM_CHANNEL" '
+          .[].actions_caches[] |
+          select(.key | startswith("steamcmd-v1-linux-x64-") or
+                        startswith("tcli-v1-linux-x64-") or
+                        startswith("valheim-bepinex-v1-") or
+                        startswith("valheim-server-v1-linux-x64-" + $channel + "-")) |
+          .id' <<< "$caches")"
+        while IFS= read -r cache_id; do
+          [[ -n "$cache_id" ]] || continue
+          [[ "$cache_id" =~ ^[0-9]+$ ]] || exit 1
+          gh api --method DELETE "$endpoint/$cache_id"
+        done <<< "$cache_ids"
   cache-steamcmd:
+    needs: prepare-caches
     uses: ./.github/workflows/cache-steamcmd.yml
     permissions:
       contents: read
       actions: write
   cache-tcli:
+    needs: prepare-caches
     uses: ./.github/workflows/cache-tcli.yml
     permissions:
       contents: read
@@ -53,6 +88,11 @@ jobs:
   - cron: 23 4 * * *
   workflow_dispatch:
     inputs:
+      discard-cache:
+        description: Discard download caches before rebuilding them
+        required: false
+        default: false
+        type: boolean
       channel:
         description: Steam branch to cache
         required: true

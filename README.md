@@ -231,6 +231,11 @@ changed versions. It then builds the server image, tests Valheim and BepInEx
 startup, and publishes to GHCR. Publication is skipped when the existing image
 matches the Steam Build ID and image source fingerprint.
 
+For a fresh download, manually run the workflow with `discard-cache` enabled
+(default: `false`). It deletes SteamCMD, TCLI, BepInEx, and the selected Valheim
+channel's caches before rebuilding them. It does not force image publication
+when the published image already matches.
+
 Workflow Bash operations run directly in their job steps. Only the container
 startup script, `valheim-entrypoint.sh`, is kept as a separate Bash file.
 
