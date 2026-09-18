@@ -149,3 +149,32 @@ Do not delete or change the host directories when recreating the container.
 
 The container does not update its own server files. Recreate it to use a newly
 published image or change ports or startup arguments.
+
+## Optional host tools
+
+Run these commands as root on Debian.
+
+### Enable swap
+
+Swap provides disk-backed memory when RAM is full; `util-linux` supplies the swap tools.
+
+```bash
+apt-get update
+apt-get install -y util-linux
+fallocate -l 4G /swapfile # Set 4GB of swap
+chmod 600 /swapfile
+/usr/sbin/mkswap /swapfile
+/usr/sbin/swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+### Enable earlyoom
+
+Earlyoom helps prevent host freezes by terminating processes when memory runs critically low; it may terminate Valheim.
+
+```bash
+apt-get update
+apt-get install -y earlyoom
+systemctl enable --now earlyoom
+systemctl is-active earlyoom
+```
