@@ -83,11 +83,17 @@ jobs:
       bepinex_version: ${{ needs.cache-bepinex.outputs.version }}
       valheim_cache_key: ${{ needs.cache-valheim.outputs.cache_key }}
       bepinex_cache_key: ${{ needs.cache-bepinex.outputs.cache_key }}
+      replace-package: ${{ inputs['replace-package'] || false }}
 'on':
   schedule:
   - cron: 23 4 * * *
   workflow_dispatch:
     inputs:
+      replace-package:
+        description: Force rebuild and replace existing image tags
+        required: false
+        default: false
+        type: boolean
       discard-cache:
         description: Discard download caches before rebuilding them
         required: false

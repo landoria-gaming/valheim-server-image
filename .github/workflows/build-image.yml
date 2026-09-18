@@ -3,6 +3,11 @@ name: "[Child] Build server image"
 on:
   workflow_call:
     inputs:
+      replace-package:
+        description: Force rebuild and replace existing image tags
+        required: false
+        default: false
+        type: boolean
       channel:
         required: true
         type: string
@@ -41,6 +46,7 @@ jobs:
       VALHEIM_VERSION: ${{ inputs.valheim_version }}
       VALHEIM_BUILD_ID: ${{ inputs.valheim_build_id }}
       BEPINEX_VERSION: ${{ inputs.bepinex_version }}
+      REPLACE_PACKAGE: ${{ inputs['replace-package'] }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6
@@ -92,7 +98,7 @@ jobs:
                   echo '[Image] Smoke test failed: server or BepInEx did not become ready.' >&2
                   exit 1
               )
-              # Build and publish a tested server image only when its version tag is missing.
+              # Build and publish a tested image when outdated or replacement is requested.
               set -euo pipefail
               : "${VALHEIM_VERSION:?}" "${VALHEIM_BUILD_ID:?}" "${BEPINEX_VERSION:?}"
               : "${VALHEIM_SERVER_DIR:?}" "${BEPINEX_CACHE_DIR:?}" "${GITHUB_REPOSITORY:?}"
@@ -154,7 +160,8 @@ jobs:
                   bepinex_tag="$VALHEIM_CHANNEL-$bepinex_tag"
               fi
               printf '[Image] Valheim %s; Build ID %s; BepInEx %s\n' "$VALHEIM_VERSION" "$VALHEIM_BUILD_ID" "$BEPINEX_VERSION"
-              if docker buildx imagetools inspect "$image:$tag" --format '{{json .Image}}' 2>/dev/null |
+              if [[ "$REPLACE_PACKAGE" != true ]] &&
+                  docker buildx imagetools inspect "$image:$tag" --format '{{json .Image}}' 2>/dev/null |
                   jq -e --arg build "$VALHEIM_BUILD_ID" --arg fingerprint "$fingerprint" --arg bepinex "$BEPINEX_VERSION" \
                       '.config.Labels["io.landoria.valheim.build-id"] == $build and
                        .config.Labels["io.landoria.bepinex.version"] == $bepinex and
