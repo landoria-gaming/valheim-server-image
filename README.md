@@ -26,8 +26,7 @@ Podman is an open-source alternative to Docker.
 Install [Podman](https://podman.io/docs/installation) on a Debian host:
 
 ```bash
-sudo apt update
-sudo apt install -y podman
+sudo apt update && sudo apt install -y podman
 ```
 
 Create the persistent directories and give the container's `valheim` user
@@ -159,8 +158,7 @@ Run these commands as root on Debian.
 Swap provides disk-backed memory when RAM is full; `util-linux` supplies the swap tools.
 
 ```bash
-apt-get update
-apt-get install -y util-linux
+apt-get update && apt-get install -y util-linux
 fallocate -l 4G /swapfile # Set 4GB of swap
 chmod 600 /swapfile
 /usr/sbin/mkswap /swapfile
@@ -173,8 +171,7 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 Earlyoom helps prevent host freezes by terminating processes when memory runs critically low; it may terminate Valheim.
 
 ```bash
-apt-get update
-apt-get install -y earlyoom
+apt-get update && apt-get install -y earlyoom
 systemctl enable --now earlyoom
 systemctl is-active earlyoom
 ```
