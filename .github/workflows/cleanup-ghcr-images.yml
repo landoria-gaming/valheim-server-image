@@ -23,20 +23,18 @@ jobs:
           # Delete current and legacy Valheim packages, including every version and tag.
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == landoria-gaming/valheim-server-image ]] || exit 1
-          endpoint=/orgs/landoria-gaming/packages
-          packages="$(gh api "$endpoint?package_type=container&per_page=100" --paginate --slurp)"
-          names="$(jq -r '.[][] | select(.name == "valheim-server-image" or
-              .name == "valheim_server.x86_64") | .name' <<< "$packages")"
           deleted=0
-          while IFS= read -r name; do
-            [[ -n "$name" ]] || continue
+          for name in valheim-server-image valheim_server.x86_64; do
+            endpoint="/orgs/landoria-gaming/packages/container/$name"
             printf '[GHCR] Deleting package %s and all its versions.\n' "$name"
-            gh api --method DELETE "$endpoint/container/$name"
-            deleted=$((deleted + 1))
-          done <<< "$names"
-          remaining="$(gh api "$endpoint?package_type=container&per_page=100" --paginate --slurp)"
-          jq -e '[.[][] | select(.name == "valheim-server-image" or
-              .name == "valheim_server.x86_64")] | length == 0' <<< "$remaining" >/dev/null
-          printf '[GHCR] Deleted %s packages; no Valheim images remain.\n' "$deleted"
+            if response="$(gh api --include --method DELETE "$endpoint" 2>&1)"; then
+              deleted=$((deleted + 1))
+            elif [[ "$response" == *"(HTTP 404)"* ]]; then
+              printf '[GHCR] Package %s was not found or is not accessible.\n' "$name"
+            else
+              printf '%s\n' "$response" >&2
+              exit 1
+            fi
+          done
           printf '### GHCR cleanup\n\nDeleted %s Valheim packages and all their versions and tags.\n' \
               "$deleted" >> "$GITHUB_STEP_SUMMARY"
