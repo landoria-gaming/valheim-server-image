@@ -1,93 +1,98 @@
-# Valheim dedicated server with BepInEx
+# Valheim docker image with BepInEx
 
-[![Valheim](https://img.shields.io/badge/Valheim-1.0.14-blue)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim-server-image)
-[![BepInEx](https://img.shields.io/badge/BepInEx-5.4.2350-green)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim-server-image)
+[![Valheim](https://img.shields.io/badge/Valheim-1.0.14-blue)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
+[![BepInEx](https://img.shields.io/badge/BepInEx-5.4.2350-green)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
 
-A Linux AMD64 image containing the Valheim dedicated server and
+A Linux x86_64 image containing the Valheim dedicated server and
 BepInExPack_Valheim, based on Debian 13 (Trixie), `debian:trixie-slim`.
 
-## Start the server
+## Start the server with podman
 
-Install Docker and run this command in Bash:
+Podman is an open-source alternative to Docker.
+
+Install [Podman](https://podman.io/docs/installation) on a Debian host:
 
 ```bash
-docker run -d \
-  --name valheim \
-  --restart unless-stopped \
-  --stop-timeout 90 \
-  -e SERVER_NAME="My Valheim Server" \
-  -e SERVER_PASSWORD="change-this-password" \
-  -e WORLD_NAME="MyWorld" \
-  -e SERVER_PORT=2456 \
-  -e PUBLIC_SERVER=1 \
-  -e CROSSPLAY=1 \
-  -p 2456-2457:2456-2457/udp \
-  -v valheim-data:/data \
-  -v valheim-plugins:/mods/plugins \
-  -v valheim-config:/mods/config \
-  ghcr.io/landoria-gaming/valheim-server-image:latest
+sudo apt update
+sudo apt install -y podman
 ```
 
-Docker creates the three named volumes on first use. They survive container
-replacement. If the package requires authentication, run `docker login ghcr.io`
-with an account and token that can read the package before pulling it.
+Run the following commands in Bash:
+
+```bash
+sudo mkdir -p /mnt/data/valheim/{savedir,BepInEx}
+sudo chown 1000:1000 /mnt/data/valheim/{savedir,BepInEx}
+
+sudo podman run \
+  --name valheim \
+  --restart always \
+  --stop-timeout 90 \
+  -p 2456-2457:2456-2457/udp \
+  -v /mnt/data/valheim/savedir:/savedir \
+  -v /mnt/data/valheim/BepInEx:/BepInEx \
+  ghcr.io/landoria-gaming/valheim_server.x86_64 \
+  -nographics -batchmode \
+  -name "My Valheim Server" \
+  -password "secret" \
+  -world "MyWorld" \
+  -port 2456 -public 1 -crossplay -savedir /savedir
+```
+
+All persistent files are grouped under `/mnt/data/valheim` on the host:
+
+```text
+/mnt/data/valheim/
+|-- savedir/
+`-- BepInEx/
+    |-- core/
+    |-- plugins/
+    `-- config/
+```
+
+These directories are bind-mounted into the container and survive its replacement.
+If migrating an existing server, stop it and copy its worlds, plugins, and
+configuration into these directories before recreating the container.
+
+Enable container startup after a host reboot:
+
+```bash
+sudo systemctl enable podman-restart.service
+```
+
+The `always` policy restarts the container after an unexpected exit. The service
+starts it after a host reboot, even if it was stopped manually before reboot.
+See [Podman restart policies](https://docs.podman.io/en/v4.4/markdown/podman-run.1.html#restart-policy).
+
+The command runs in the foreground and displays server logs. Keep the terminal
+open. To stop the server gracefully, run `sudo podman stop --time 90 valheim`
+from another terminal.
+
+To view logs separately, use `sudo podman logs -f valheim`. In this log view,
+`Ctrl+C` stops following logs without stopping the server.
 
 ## Configuration
 
-Set these environment variables when creating the container:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `SERVER_NAME` | `Valheim Server` | Server name, including spaces |
-| `SERVER_PASSWORD` | Required | At least five characters; must not appear in the server name |
-| `WORLD_NAME` | `Dedicated` | World to load or create |
-| `SERVER_PORT` | `2456` | First UDP port, from 1024 to 65534 |
-| `PUBLIC_SERVER` | `1` | `1` lists the server publicly; `0` hides it |
-| `CROSSPLAY` | `1` | `1` enables crossplay; `0` disables it |
-| `DATA_DIR` | `/data` | Absolute path inside the container for worlds and server data |
-
-Only set one server port. Valheim also uses the following port automatically.
-Publish both UDP ports with matching host and container numbers, and allow them
-through your firewall or router when needed. For example, replace the port lines
-above with:
-
-```bash
--e SERVER_PORT=2460 \
--p 2460-2461:2460-2461/udp
-```
-
-Arguments after the image name are appended to the Valheim command. For example,
-append `-preset hard` to the full `docker run` command:
-
-```bash
-ghcr.io/landoria-gaming/valheim-server-image:latest -preset hard
-```
+See the official [Valheim dedicated server guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/)
+for server arguments and configuration. Pass server arguments after the image name.
 
 ## Persistent files and mods
 
-| Container path | Contents |
-| --- | --- |
-| `${DATA_DIR}` (default `/data`) | Worlds and server data |
-| `/mods/plugins` | BepInEx plugins and their dependencies |
-| `/mods/config` | BepInEx and plugin configuration |
+| Host path | Container path | Contents |
+| --- | --- | --- |
+| `/mnt/data/valheim/savedir` | `/savedir` | Worlds and server data |
+| `/mnt/data/valheim/BepInEx/plugins` | `/BepInEx/plugins` | BepInEx plugins and their dependencies |
+| `/mnt/data/valheim/BepInEx/config` | `/BepInEx/config` | BepInEx and plugin configuration |
 
-The default BepInEx configuration is copied on startup without replacing existing
-configuration files. BepInEx is enabled automatically.
+BepInEx files are initialized on startup without replacing existing plugins or
+configuration. Bundled core files are refreshed from the image on each startup.
+BepInEx is enabled automatically.
 
-To choose a data directory on the host, replace `-v valheim-data:/data` with
-`-v /srv/valheim-data:/data` in the start command. The host directory must be
-writable by UID 1000.
+To choose another data directory on the host, replace `/mnt/data/valheim` in the start
+command. Both mounted directories must be writable by UID 1000.
 
-To also change the path inside the container, set `DATA_DIR` and mount your data
-at that same path. For example, replace the data volume line with:
-
-```bash
--e DATA_DIR=/srv/worlds \
--v /srv/valheim-data:/srv/worlds
-```
-
-Changing the path does not move existing worlds. Copy the existing data into the
-new host directory before recreating the container.
+The start command stores worlds in `/savedir` with `-savedir /savedir`. Changing the host directory does
+not move existing worlds. Copy the existing data into the new host directory
+before recreating the container.
 
 ### Install mods
 
@@ -99,32 +104,32 @@ For an archive containing `BepInEx/plugins`, copy its contents into the persiste
 plugins directory:
 
 ```bash
-docker cp ./BepInEx/plugins/. valheim:/mods/plugins/
-docker restart valheim
-docker logs -f valheim
+sudo podman cp ./BepInEx/plugins/. valheim:/BepInEx/plugins/
+sudo podman restart valheim
+sudo podman logs -f valheim
 ```
 
 Adapt the source path to the extracted archive. Preserve plugin subdirectories
 and supporting files. For a single plugin DLL:
 
 ```bash
-docker cp ./MyPlugin.dll valheim:/mods/plugins/MyPlugin.dll
-docker restart valheim
+sudo podman cp ./MyPlugin.dll valheim:/BepInEx/plugins/MyPlugin.dll
+sudo podman restart valheim
 ```
 
-Files copied to `/mods/plugins` persist in the `valheim-plugins` volume. Check
+Files copied to `/BepInEx/plugins` persist in `/mnt/data/valheim/BepInEx/plugins` on the host. Check
 the startup logs for the plugin name and any missing dependency or loading errors.
-Plugins usually generate their configuration under `/mods/config` after startup.
+Plugins usually generate their configuration under `/BepInEx/config` after startup.
 
 To edit a generated configuration, copy it out, edit it locally, then stop the
 server and copy it back before starting it again:
 
 ```bash
-docker cp valheim:/mods/config/MyPlugin.cfg ./MyPlugin.cfg
+sudo podman cp valheim:/BepInEx/config/MyPlugin.cfg ./MyPlugin.cfg
 # Edit MyPlugin.cfg with your text editor.
-docker stop --time 90 valheim
-docker cp ./MyPlugin.cfg valheim:/mods/config/MyPlugin.cfg
-docker start valheim
+sudo podman stop --time 90 valheim
+sudo podman cp ./MyPlugin.cfg valheim:/BepInEx/config/MyPlugin.cfg
+sudo podman start valheim
 ```
 
 Replace `MyPlugin.cfg` with the actual configuration filename. Files copied from
@@ -133,80 +138,69 @@ writable by UID 1000 if the plugin updates them. Back up worlds before adding or
 updating mods. Follow each mod's instructions for compatibility and client-side
 installation requirements.
 
-For bind mounts instead of named volumes, the mounted directories must be
-writable by UID 1000. Install any client-side mods required by your chosen plugins
-on each player's game as well.
+Install any client-side mods required by your chosen plugins on each player's
+game as well.
 
 ## Logs, shutdown, and updates
 
 ```bash
-docker logs -f valheim
-docker stop --time 90 valheim
-docker start valheim
+sudo podman logs -f valheim
+sudo podman stop --time 90 valheim
+sudo podman start valheim
 ```
 
 Stopping sends `SIGINT` so the server can save and exit.
 
 ### Update the image without losing data
 
-The start command above uses named volumes for worlds (`valheim-data`), plugins
-(`valheim-plugins`), and configuration (`valheim-config`). These files are stored
-outside the container and are retained when the container is removed.
+The start command above stores worlds, plugins, and configuration under
+`/mnt/data/valheim` on the host. These files are retained when the container is removed.
 
-1. Keep your current start command, including the environment variables, startup
-   arguments, port mappings, and volume names or bind mount paths.
+1. Keep your current start command, including the startup
+   arguments, port mappings, and bind mount paths.
 2. Pull the new image while the existing server is still running:
 
 ```bash
-docker pull ghcr.io/landoria-gaming/valheim-server-image:latest
+sudo podman pull ghcr.io/landoria-gaming/valheim_server.x86_64
 ```
 
 3. Stop the server gracefully so it finishes saving before the backup:
 
 ```bash
-docker stop --time 90 valheim
+sudo podman stop --time 90 valheim
 ```
 
-4. Back up all three named volumes. Run this Bash command from the directory
-   where you want to store the backups:
+4. Back up both directories while the server is stopped. Run this Bash
+   command from the directory where you want to store the backup:
 
 ```bash
-backup_dir="$PWD/valheim-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$backup_dir"
-for volume in valheim-data valheim-plugins valheim-config; do
-  docker run --rm \
-    --mount "type=volume,source=$volume,target=/source,readonly" \
-    --mount "type=bind,source=$backup_dir,target=/backup" \
-    debian:trixie-slim \
-    tar -czf "/backup/$volume.tar.gz" -C /source .
-done
+backup_file="$PWD/valheim-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+sudo tar -czf "$backup_file" -C /mnt/data/valheim savedir BepInEx
 ```
 
-Use your actual volume names if they differ. For bind mounts, back up the host
-directories instead while the server is stopped. If you changed `DATA_DIR`, keep
-the same value and mount destination when recreating the container.
+Use your actual host directory if it differs. Keep the same mount destinations
+when recreating the container.
 
 5. Remove only the old container:
 
 ```bash
-docker rm valheim
+sudo podman rm valheim
 ```
 
-6. Repeat the full start command from **Start the server**, using the same three
-   volumes and your saved configuration. Docker uses the newly pulled image.
-7. Check `docker logs -f valheim` for startup and mod errors, then verify that
+6. Repeat the full start command from **Start the server with podman**, using the same host
+   directories and your saved configuration. Podman uses the newly pulled image.
+7. Check `sudo podman logs -f valheim` for startup and mod errors, then verify that
    the expected world loads before allowing players to reconnect.
 
-Do not delete the volumes, change their names, or run `docker compose down -v`.
-If you use Compose, keep the same project name and volume definitions, then run
-`docker compose pull` and `docker compose up -d`. Configure `stop_grace_period: 90s`
-in your Compose service so replacement allows a graceful shutdown. Stop and back
-up the server's persistent volumes before replacement as described above.
+Do not delete or change the host directories when recreating the container.
 
 The container does not update its own server files. Recreate it to use a newly
-published image or change environment variables, ports, or startup arguments.
+published image or change ports or startup arguments.
 
 ## Image tags and versions
+
+The image is published as `ghcr.io/landoria-gaming/valheim_server.x86_64`.
+When no tag is specified, Podman uses `latest`.
 
 | Tag | Purpose |
 | --- | --- |
@@ -225,7 +219,7 @@ Inspect the Valheim version, Steam Build ID, BepInEx version, and base image
 description:
 
 ```bash
-docker image inspect ghcr.io/landoria-gaming/valheim-server-image:latest \
+sudo podman image inspect ghcr.io/landoria-gaming/valheim_server.x86_64 \
   --format '{{json .Config.Labels}}'
 ```
 

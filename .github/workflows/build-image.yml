@@ -27,7 +27,7 @@ permissions:
 jobs:
   build-and-publish-image:
     concurrency:
-      group: ghcr-valheim-server-image
+      group: ghcr-valheim-server-x86-64
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -72,8 +72,8 @@ jobs:
                   # Verify that an isolated container starts the server and loads BepInEx.
                   set -euo pipefail
                   image="${1:?Image is required}"
-                  container="$(docker run -d -e SERVER_NAME=WorkflowSmokeTest -e WORLD_NAME=WorkflowSmokeTest \
-                      -e SERVER_PASSWORD=smoke-test-password -e PUBLIC_SERVER=0 -e CROSSPLAY=0 "$image")"
+                  container="$(docker run -d "$image" -nographics -batchmode -name WorkflowSmokeTest \
+                      -world WorkflowSmokeTest -password smoke-test-password -port 2456 -public 0 -savedir /savedir)"
                   trap 'docker stop --time 45 "$container" >/dev/null; docker rm -v "$container" >/dev/null' EXIT
                   log="$(mktemp)"
                   for ((attempt=0; attempt<90; attempt++)); do
@@ -146,7 +146,7 @@ jobs:
                   "$BEPINEX_CACHE_DIR/package/manifest.json" >/dev/null
               grep -Fx "VALHEIM_VERSION=$VALHEIM_VERSION" "$VALHEIM_SERVER_DIR/image-metadata.env" >/dev/null
               fingerprint="$({ cat Dockerfile valheim-entrypoint.sh; declare -f publish_server_image; } | sha256sum | cut -c1-12)"
-              image="ghcr.io/${GITHUB_REPOSITORY,,}"
+              image="ghcr.io/landoria-gaming/valheim_server.x86_64"
               tag="valheim-server-$VALHEIM_VERSION-bepinex-$BEPINEX_VERSION"
               if [[ "$VALHEIM_CHANNEL" != current ]]; then tag="$VALHEIM_CHANNEL-$tag"; fi
               printf '[Image] Valheim %s; Build ID %s; BepInEx %s\n' "$VALHEIM_VERSION" "$VALHEIM_BUILD_ID" "$BEPINEX_VERSION"

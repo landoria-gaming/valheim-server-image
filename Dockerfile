@@ -18,21 +18,19 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 libpulse0 libpulse-mainloop-glib0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home valheim \
-    && install -d -o valheim -g valheim /opt/valheim /opt/bepinex-default-config /data /mods/plugins /mods/config
+    && install -d -o valheim -g valheim /opt/valheim /opt/bepinex-default /savedir /BepInEx
 COPY --chown=valheim:valheim valheim/ /opt/valheim/
 COPY --chown=valheim:valheim bepinex/ /opt/valheim/
 COPY --chmod=0755 valheim-entrypoint.sh /usr/local/bin/valheim-entrypoint
 RUN test -s /opt/valheim/BepInEx/core/BepInEx.Preloader.dll \
     && chmod +x /opt/valheim/valheim_server.x86_64 \
-    && cp -a /opt/valheim/BepInEx/config/. /opt/bepinex-default-config/ \
-    && rm -rf /opt/valheim/BepInEx/config /opt/valheim/BepInEx/plugins \
-    && ln -s /mods/config /opt/valheim/BepInEx/config \
-    && ln -s /mods/plugins /opt/valheim/BepInEx/plugins \
-    && chown -R valheim:valheim /opt/bepinex-default-config
+    && cp -a /opt/valheim/BepInEx/. /opt/bepinex-default/ \
+    && rm -rf /opt/valheim/BepInEx \
+    && ln -s /BepInEx /opt/valheim/BepInEx \
+    && chown -R valheim:valheim /opt/bepinex-default
 USER valheim
 WORKDIR /opt/valheim
-ENV SERVER_NAME="Valheim Server" WORLD_NAME="Dedicated" SERVER_PORT="2456" PUBLIC_SERVER="1" CROSSPLAY="1" DATA_DIR="/data"
-VOLUME ["/data", "/mods/plugins", "/mods/config"]
+VOLUME ["/savedir", "/BepInEx"]
 EXPOSE 2456/udp 2457/udp
 STOPSIGNAL SIGINT
 ENTRYPOINT ["/usr/local/bin/valheim-entrypoint"]

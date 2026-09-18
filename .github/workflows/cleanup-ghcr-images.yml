@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: ghcr-valheim-server-image
+      group: ghcr-valheim-server-x86-64
       cancel-in-progress: false
     steps:
       - name: Delete all image versions except the most recent
@@ -23,7 +23,7 @@ jobs:
           # Keep the newest package version and delete all older versions.
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == landoria-gaming/valheim-server-image ]] || exit 1
-          endpoint=/orgs/landoria-gaming/packages/container/valheim-server-image/versions
+          endpoint=/orgs/landoria-gaming/packages/container/valheim_server.x86_64/versions
           versions="$(gh api "$endpoint?per_page=100" --paginate --slurp | jq 'add')"
           count="$(jq 'length' <<< "$versions")"
           if [[ "$count" == 0 ]]; then
