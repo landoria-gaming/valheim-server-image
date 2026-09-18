@@ -18,7 +18,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 libpulse0 libpulse-mainloop-glib0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home valheim \
-    && install -d -o valheim -g valheim /opt/valheim /opt/bepinex-default /savedir /BepInEx
+    && install -d -o valheim -g valheim /opt/valheim /opt/bepinex-default /savedir /BepInEx \
+        /home/valheim/.config/unity3d/IronGate \
+    && ln -s /savedir /home/valheim/.config/unity3d/IronGate/Valheim
 COPY --chown=valheim:valheim valheim/ /opt/valheim/
 COPY --chown=valheim:valheim bepinex/ /opt/valheim/
 COPY --chmod=0755 valheim-entrypoint.sh /usr/local/bin/valheim-entrypoint

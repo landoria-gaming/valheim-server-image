@@ -73,7 +73,7 @@ jobs:
                   set -euo pipefail
                   image="${1:?Image is required}"
                   container="$(docker run -d "$image" -nographics -batchmode -name WorkflowSmokeTest \
-                      -world WorkflowSmokeTest -password smoke-test-password -port 2456 -public 0 -savedir /savedir)"
+                      -world WorkflowSmokeTest -password smoke-test-password -port 2456 -public 0)"
                   trap 'docker stop --time 45 "$container" >/dev/null; docker rm -v "$container" >/dev/null' EXIT
                   log="$(mktemp)"
                   for ((attempt=0; attempt<90; attempt++)); do
