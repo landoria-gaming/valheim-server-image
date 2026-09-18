@@ -225,6 +225,7 @@ jobs:
           cp "$work_dir/README.md" "$work_dir/original.md"
           python3 - "$work_dir/README.md" <<'PY'
           import os, re, sys
+          from datetime import date
           from pathlib import Path
           path = Path(sys.argv[1])
           text = path.read_text()
@@ -235,9 +236,9 @@ jobs:
               text, count = re.subn(pattern, f'https://img.shields.io/badge/{label}-{version}-{color}', text)
               assert count == 1, f'Missing or duplicate {label} badge'
           build_date = os.environ['IMAGE_BUILD_DATE']
-          assert re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', build_date)
-          text, count = re.subn(r'https://img\.shields\.io/badge/Image_build_date-(?:pending|[0-9]{4}--[0-9]{2}--[0-9]{2})-orange',
-                               f'https://img.shields.io/badge/Image_build_date-{build_date.replace("-", "--")}-orange', text)
+          formatted_date = date.fromisoformat(build_date).strftime('%d/%m/%Y').replace('/', '%2F')
+          text, count = re.subn(r'https://img\.shields\.io/badge/Image_build_date-(?:pending|[0-9]{4}--[0-9]{2}--[0-9]{2}|[0-9]{2}%2F[0-9]{2}%2F[0-9]{4})-orange',
+                               f'https://img.shields.io/badge/Image_build_date-{formatted_date}-orange', text)
           assert count == 1, 'Missing or duplicate image build date badge'
           path.write_text(text)
           PY

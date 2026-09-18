@@ -60,6 +60,10 @@ sudo podman run \
   -port 2456 -public 1 -crossplay -preset normal
 ```
 
+For incoming connections, you usually need to allow UDP ports 2456–2457 through
+your firewall and forward them on your router. With crossplay enabled, router
+port forwarding is not required because Valheim uses a relay.
+
 Press `Ctrl+C` in the terminal running the server to stop it gracefully.
 
 All persistent files are grouped under `/mnt/data/valheim` on the host:
