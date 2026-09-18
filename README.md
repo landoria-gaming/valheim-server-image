@@ -1,6 +1,6 @@
 # Valheim docker image with BepInEx
 
-[![Valheim](https://img.shields.io/badge/Valheim-1.0.14-blue)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
+[![Valheim](https://img.shields.io/badge/Valheim-1.0.15-blue)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.2350-green)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
 
 A Linux x86_64 image containing the Valheim dedicated server and
