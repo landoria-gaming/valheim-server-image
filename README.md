@@ -2,7 +2,7 @@
 
 [![Valheim](https://img.shields.io/badge/Valheim-1.0.15-blue)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.2350-green)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
-[![Image build date](https://img.shields.io/badge/Image_build_date-pending-orange)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
+[![Image build date](https://img.shields.io/badge/Image_build_date-2026--09--18-orange)](https://github.com/landoria-gaming/valheim-server-image/pkgs/container/valheim_server.x86_64)
 
 A Linux x86_64 image containing the Valheim dedicated server and
 BepInExPack_Valheim, based on Debian 13 (Trixie), `debian:trixie-slim`.
