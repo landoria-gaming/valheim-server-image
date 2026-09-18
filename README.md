@@ -44,6 +44,8 @@ sudo chown -R 1000:1000 /mnt/data/valheim/{savedir,BepInEx}
 Start the server:
 
 ```bash
+# sudo podman pull ghcr.io/landoria-gaming/valheim_server.x86_64:latest
+# sudo podman stop valheim && sudo podman rm valheim
 sudo podman run \
   --name valheim \
   --restart always \
@@ -58,6 +60,8 @@ sudo podman run \
   -port 2456 -public 1 -crossplay
 ```
 
+Press `Ctrl+C` in the terminal running the server to stop it gracefully.
+
 All persistent files are grouped under `/mnt/data/valheim` on the host:
 
 ```text
@@ -69,89 +73,12 @@ All persistent files are grouped under `/mnt/data/valheim` on the host:
     `-- config/
 ```
 
-These directories are bind-mounted into the container and survive its replacement.
-If migrating an existing server, stop it and copy its worlds, plugins, and
-configuration into these directories before recreating the container.
-
-Enable container startup after a host reboot:
-
-```bash
-sudo systemctl enable podman-restart.service
-```
-
-The `always` policy restarts the container after an unexpected exit. The service
-starts it after a host reboot, even if it was stopped manually before reboot.
-See [Podman restart policies](https://docs.podman.io/en/v4.4/markdown/podman-run.1.html#restart-policy).
-
-The command runs in the foreground and displays server logs. Keep the terminal
-open. To stop the server gracefully, run `sudo podman stop valheim`
-from another terminal.
-
-To view logs separately, use `sudo podman logs -f valheim`. In this log view,
-`Ctrl+C` stops following logs without stopping the server.
-
 ## Configuration
 
 See the official [Valheim dedicated server guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/)
 for server arguments and configuration. Pass server arguments after the image name.
 
-## Logs, shutdown, and updates
-
-```bash
-sudo podman logs -f valheim
-sudo podman stop valheim
-sudo podman start valheim
-```
-
-Stopping sends `SIGINT` so the server can save and exit.
-
-### Update the image without losing data
-
-The start command above stores worlds, plugins, and configuration under
-`/mnt/data/valheim` on the host. These files are retained when the container is removed.
-
-1. Keep your current start command, including the startup
-   arguments, port mappings, and bind mount paths.
-2. Pull the new image while the existing server is still running:
-
-```bash
-sudo podman pull ghcr.io/landoria-gaming/valheim_server.x86_64
-```
-
-3. Stop the server gracefully so it finishes saving before the backup:
-
-```bash
-sudo podman stop valheim
-```
-
-4. Back up both directories while the server is stopped. Run this Bash
-   command from the directory where you want to store the backup:
-
-```bash
-backup_file="$PWD/valheim-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-sudo tar -czf "$backup_file" -C /mnt/data/valheim savedir BepInEx
-```
-
-Use your actual host directory if it differs. Keep the same mount destinations
-when recreating the container.
-
-5. Remove only the old container:
-
-```bash
-sudo podman rm valheim
-```
-
-6. Repeat the full start command from **Start the server with podman**, using the same host
-   directories and your saved configuration. Podman uses the newly pulled image.
-7. Check `sudo podman logs -f valheim` for startup and mod errors, then verify that
-   the expected world loads before allowing players to reconnect.
-
-Do not delete or change the host directories when recreating the container.
-
-The container does not update its own server files. Recreate it to use a newly
-published image or change ports or startup arguments.
-
-## Optional host tools
+## Optional host configuration
 
 Run these commands as root on Debian.
 
