@@ -15,41 +15,28 @@ jobs:
       group: ghcr-valheim-server-x86-64
       cancel-in-progress: false
     steps:
-      - name: Delete all image versions except the most recent
+      - name: Delete all Valheim image packages
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Keep the newest package version and delete all older versions.
+          # Delete current and legacy Valheim packages, including every version and tag.
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == landoria-gaming/valheim-server-image ]] || exit 1
-          endpoint=/orgs/landoria-gaming/packages/container/valheim_server.x86_64/versions
-          versions="$(gh api "$endpoint?per_page=100" --paginate --slurp | jq 'add')"
-          count="$(jq 'length' <<< "$versions")"
-          if [[ "$count" == 0 ]]; then
-            echo '[GHCR] No images to clean up.'
-            printf '### GHCR cleanup\n\nNo images found.\n' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          newest="$(jq 'sort_by(.created_at, .id) | last' <<< "$versions")"
-          keep_id="$(jq -r '.id' <<< "$newest")"
-          digest="$(jq -r '.name' <<< "$newest")"
-          tags="$(jq -r '.metadata.container.tags | join(", ")' <<< "$newest")"
-          printf '[GHCR] Keeping newest version %s: %s; tags: %s\n' "$keep_id" "$digest" "$tags"
-          obsolete_ids="$(jq -r --argjson keep "$keep_id" '.[] | select(.id != $keep) | .id' <<< "$versions")"
+          endpoint=/orgs/landoria-gaming/packages
+          packages="$(gh api "$endpoint?package_type=container&per_page=100" --paginate --slurp)"
+          names="$(jq -r '.[][] | select(.name == "valheim-server-image" or
+              .name == "valheim_server.x86_64") | .name' <<< "$packages")"
           deleted=0
-          while IFS= read -r id; do
-            [[ -n "$id" ]] || continue
-            [[ "$id" =~ ^[0-9]+$ ]] || exit 1
-            printf '[GHCR] Deleting previous version %s\n' "$id"
-            gh api --method DELETE "$endpoint/$id"
+          while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            printf '[GHCR] Deleting package %s and all its versions.\n' "$name"
+            gh api --method DELETE "$endpoint/container/$name"
             deleted=$((deleted + 1))
-          done <<< "$obsolete_ids"
-          remaining="$(gh api "$endpoint?per_page=100" --paginate --slurp | jq 'add')"
-          jq -e --argjson keep "$keep_id" 'length == 1 and .[0].id == $keep' <<< "$remaining" >/dev/null
-          printf '[GHCR] Deleted %s versions; verified exactly one remaining image.\n' "$deleted"
-          {
-            printf '### GHCR cleanup\n\n| Item | Result |\n| --- | --- |\n'
-            printf '| Deleted versions | %s |\n| Retained version ID | %s |\n' "$deleted" "$keep_id"
-            printf '| Image digest | `%s` |\n| Retained tags | %s |\n' "$digest" "${tags:-none}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$names"
+          remaining="$(gh api "$endpoint?package_type=container&per_page=100" --paginate --slurp)"
+          jq -e '[.[][] | select(.name == "valheim-server-image" or
+              .name == "valheim_server.x86_64")] | length == 0' <<< "$remaining" >/dev/null
+          printf '[GHCR] Deleted %s packages; no Valheim images remain.\n' "$deleted"
+          printf '### GHCR cleanup\n\nDeleted %s Valheim packages and all their versions and tags.\n' \
+              "$deleted" >> "$GITHUB_STEP_SUMMARY"

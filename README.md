@@ -206,14 +206,19 @@ When no tag is specified, Podman uses `latest`.
 | --- | --- |
 | `latest`, `current` | Latest published stable server image |
 | `1.0.14` | Published image for this Valheim version |
-| `valheim-server-1.0.14-bepinex-5.4.2350` | Image with these Valheim and BepInEx versions |
+| `valheim-1.0.14` | Image with this Valheim version |
+| `bepinex-5.4.2350` | Image with this BepInEx version |
 | `public-test` | Latest published public-test image |
 
+Public-test version tags use the `public-test-` prefix. Each version tag points
+to a complete server image. Tags are updated when the other component changes;
+use the image labels to check both versions.
+
 Version numbers in the examples change with releases. Tags can be updated;
-use an image digest when you need an exact immutable reference. Old versions may
-be removed by the separate **Clean up GHCR images** workflow. It runs manually
-and keeps only the package version created most recently, including across
-channels.
+use an image digest when you need an exact immutable reference. The separate **Clean up GHCR images** workflow runs manually and deletes both
+Valheim packages (`valheim_server.x86_64` and legacy `valheim-server-image`),
+including all versions and tags across channels. No image is retained. The
+repository token must have admin access to both packages.
 
 Inspect the Valheim version, Steam Build ID, BepInEx version, and base image
 description:

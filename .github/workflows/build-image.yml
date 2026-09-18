@@ -147,12 +147,17 @@ jobs:
               grep -Fx "VALHEIM_VERSION=$VALHEIM_VERSION" "$VALHEIM_SERVER_DIR/image-metadata.env" >/dev/null
               fingerprint="$({ cat Dockerfile valheim-entrypoint.sh; declare -f publish_server_image; } | sha256sum | cut -c1-12)"
               image="ghcr.io/landoria-gaming/valheim_server.x86_64"
-              tag="valheim-server-$VALHEIM_VERSION-bepinex-$BEPINEX_VERSION"
-              if [[ "$VALHEIM_CHANNEL" != current ]]; then tag="$VALHEIM_CHANNEL-$tag"; fi
+              tag="valheim-$VALHEIM_VERSION"
+              bepinex_tag="bepinex-$BEPINEX_VERSION"
+              if [[ "$VALHEIM_CHANNEL" != current ]]; then
+                  tag="$VALHEIM_CHANNEL-$tag"
+                  bepinex_tag="$VALHEIM_CHANNEL-$bepinex_tag"
+              fi
               printf '[Image] Valheim %s; Build ID %s; BepInEx %s\n' "$VALHEIM_VERSION" "$VALHEIM_BUILD_ID" "$BEPINEX_VERSION"
               if docker buildx imagetools inspect "$image:$tag" --format '{{json .Image}}' 2>/dev/null |
-                  jq -e --arg build "$VALHEIM_BUILD_ID" --arg fingerprint "$fingerprint" \
+                  jq -e --arg build "$VALHEIM_BUILD_ID" --arg fingerprint "$fingerprint" --arg bepinex "$BEPINEX_VERSION" \
                       '.config.Labels["io.landoria.valheim.build-id"] == $build and
+                       .config.Labels["io.landoria.bepinex.version"] == $bepinex and
                        .config.Labels["io.landoria.image.fingerprint"] == $fingerprint' >/dev/null; then
                   result='UP TO DATE: image already published; build skipped'
               else
@@ -167,6 +172,8 @@ jobs:
                       --build-arg "IMAGE_FINGERPRINT=$fingerprint" --build-arg "IMAGE_REVISION=$GITHUB_SHA" -t "$image:$tag" "$context"
                   smoke_test_image "$image:$tag"
                   docker push "$image:$tag"
+                  docker tag "$image:$tag" "$image:$bepinex_tag"
+                  docker push "$image:$bepinex_tag"
                   docker tag "$image:$tag" "$image:$VALHEIM_CHANNEL"
                   docker push "$image:$VALHEIM_CHANNEL"
                   if [[ "$VALHEIM_CHANNEL" == current ]]; then
@@ -185,6 +192,7 @@ jobs:
                       printf '| Version tag | `%s:%s` |\n' "$image" "$VALHEIM_VERSION"
                   fi
                   printf '| Image | `%s:%s` |\n| Result | %s |\n' "$image" "$tag" "$result"
+                  printf '| BepInEx tag | `%s:%s` |\n' "$image" "$bepinex_tag"
               } >> "$GITHUB_STEP_SUMMARY"
           )
 
