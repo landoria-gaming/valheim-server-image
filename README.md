@@ -57,7 +57,7 @@ sudo podman run \
   -name "My Valheim Server" \
   -password "secret" \
   -world "MyWorld" \
-  -port 2456 -public 1 -crossplay
+  -port 2456 -public 1 -crossplay -preset normal
 ```
 
 Press `Ctrl+C` in the terminal running the server to stop it gracefully.
@@ -84,7 +84,7 @@ Run these commands as root on Debian.
 
 ### Enable swap
 
-Swap provides disk-backed memory when RAM is full; `util-linux` supplies the swap tools.
+Swap provides disk-backed memory when RAM is full.
 
 ```bash
 apt-get update && apt-get install -y util-linux
