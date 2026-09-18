@@ -204,7 +204,7 @@ jobs:
           )
 
           publish_server_image
-      - name: Update the README version badges
+      - name: Update the README image badges
         if: inputs.channel == 'current' && github.ref == 'refs/heads/main'
         shell: bash
         env:
@@ -212,6 +212,10 @@ jobs:
         run: |
           # Update static badge URLs after stable image publication, including private repositories.
           set -euo pipefail
+          IMAGE_BUILD_DATE="$(docker buildx imagetools inspect \
+              ghcr.io/landoria-gaming/valheim_server.x86_64:current --format '{{json .Image}}' |
+              jq -er '.created | split("T")[0]')"
+          export IMAGE_BUILD_DATE
           endpoint="repos/$GITHUB_REPOSITORY/contents/README.md"
           document="$(gh api "$endpoint?ref=main")"
           sha="$(jq -r .sha <<< "$document")"
@@ -230,13 +234,18 @@ jobs:
               pattern = rf'https://img\.shields\.io/badge/{label}-[0-9.]+-{color}'
               text, count = re.subn(pattern, f'https://img.shields.io/badge/{label}-{version}-{color}', text)
               assert count == 1, f'Missing or duplicate {label} badge'
+          build_date = os.environ['IMAGE_BUILD_DATE']
+          assert re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', build_date)
+          text, count = re.subn(r'https://img\.shields\.io/badge/Image_build_date-(?:pending|[0-9]{4}--[0-9]{2}--[0-9]{2})-orange',
+                               f'https://img.shields.io/badge/Image_build_date-{build_date.replace("-", "--")}-orange', text)
+          assert count == 1, 'Missing or duplicate image build date badge'
           path.write_text(text)
           PY
           if cmp -s "$work_dir/original.md" "$work_dir/README.md"; then
-              echo '[Badges] Versions unchanged; README update skipped.'
+              echo '[Badges] Image badges unchanged; README update skipped.'
               exit 0
           fi
           gh api --method PUT "$endpoint" -f branch=main -f "sha=$sha" \
-              -f 'message=Update published image version badges' \
+              -f 'message=Update published image badges' \
               -f "content=$(base64 -w0 "$work_dir/README.md")" >/dev/null
           printf '[Badges] Updated README: Valheim %s; BepInEx %s.\n' "$VALHEIM_VERSION" "$BEPINEX_VERSION"
