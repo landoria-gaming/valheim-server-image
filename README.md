@@ -52,7 +52,7 @@ sudo podman run \
   -p 2456-2457:2456-2457/udp \
   -v /mnt/data/valheim/savedir:/savedir \
   -v /mnt/data/valheim/BepInEx:/BepInEx \
-  ghcr.io/landoria-gaming/valheim_server.x86_64 \
+  ghcr.io/landoria-gaming/valheim_server.x86_64:latest \
   -nographics -batchmode \
   -name "My Valheim Server" \
   -password "secret" \
@@ -82,21 +82,73 @@ All persistent files are grouped under `/mnt/data/valheim` on the host:
 See the official [Valheim dedicated server guide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/)
 for server arguments and configuration. Pass server arguments after the image name.
 
+## Optional: Install as a systemd service
+
+The service starts at boot. During a stop, Valheim saves the world and exits
+through its native `server_exit.drp` mechanism.
+
+Create `/etc/systemd/system/valheim-server.service`:
+
+```ini
+[Unit]
+Description=Valheim dedicated server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=podman pull ghcr.io/landoria-gaming/valheim_server.x86_64:latest
+ExecStartPre=-podman rm --ignore valheim
+ExecStart=podman run --rm --name valheim \
+  -p 2456-2457:2456-2457/udp \
+  -v /mnt/data/valheim/savedir:/savedir \
+  -v /mnt/data/valheim/BepInEx:/BepInEx \
+  ghcr.io/landoria-gaming/valheim_server.x86_64:latest -nographics -batchmode \
+  -name "My Valheim Server" -password secret \
+  -world MyWorld -port 2456 -public 1 -crossplay -preset normal
+ExecStop=podman exec valheim touch /opt/valheim/server_exit.drp
+ExecStop=podman wait valheim
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+KillMode=none
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now valheim-server.service
+```
+
+Manage the service with these commands:
+
+```bash
+sudo systemctl start valheim-server.service
+sudo systemctl stop valheim-server.service
+sudo systemctl restart valheim-server.service
+sudo systemctl status valheim-server.service
+sudo journalctl -u valheim-server.service -f
+```
+
 ## Optional host configuration
 
-Run these commands as root on Debian.
+Run these commands on Debian.
 
 ### Enable swap
 
 Swap provides disk-backed memory when RAM is full.
 
 ```bash
-apt-get update && apt-get install -y util-linux
-fallocate -l 4G /swapfile # Set 4GB of swap
-chmod 600 /swapfile
-/usr/sbin/mkswap /swapfile
-/usr/sbin/swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
+sudo apt-get update && sudo apt-get install -y util-linux
+sudo fallocate -l 4G /swapfile # Set 4GB of swap
+sudo chmod 600 /swapfile
+sudo /usr/sbin/mkswap /swapfile
+sudo /usr/sbin/swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 ### Enable earlyoom
@@ -104,7 +156,7 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 Earlyoom helps prevent host freezes by terminating processes when memory runs critically low; it may terminate Valheim.
 
 ```bash
-apt-get update && apt-get install -y earlyoom
-systemctl enable --now earlyoom
-systemctl is-active earlyoom
+sudo apt-get update && sudo apt-get install -y earlyoom
+sudo systemctl enable --now earlyoom
+sudo systemctl is-active earlyoom
 ```
