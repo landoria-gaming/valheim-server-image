@@ -89,6 +89,12 @@ through its native `server_exit.drp` mechanism.
 
 Create `/etc/systemd/system/valheim-server.service`:
 
+```bash
+sudo nano /etc/systemd/system/valheim-server.service
+```
+
+Paste this content:
+
 ```ini
 [Unit]
 Description=Valheim dedicated server
@@ -133,6 +139,16 @@ sudo systemctl restart valheim-server.service
 sudo systemctl status valheim-server.service
 sudo journalctl -u valheim-server.service -f
 ```
+
+Uninstall the service:
+
+```bash
+sudo systemctl disable --now valheim-server.service
+sudo rm -f /etc/systemd/system/valheim-server.service
+sudo systemctl daemon-reload
+```
+
+This keeps the server data under `/mnt/data/valheim`.
 
 ## Optional host configuration
 
